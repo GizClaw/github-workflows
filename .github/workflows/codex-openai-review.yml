@@ -42,6 +42,15 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Require OpenAI API key
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          if [ -z "$OPENAI_API_KEY" ]; then
+            echo "::error title=Missing OPENAI_API_KEY::Pass the required OPENAI_API_KEY organization secret explicitly from the calling workflow."
+            exit 1
+          fi
+
       - name: Review pull request with OpenAI
         id: codex
         uses: openai/codex-action@52fe01ec70a42f454c9d2ebd47598f9fd6893d56 # v1
