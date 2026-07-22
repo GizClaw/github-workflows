@@ -48,6 +48,12 @@ The reusable workflow defaults `model` to `gpt-5.6-terra`; callers may select
 another supported OpenAI model deliberately. Keep the selected model in the
 wrapper so that a model change is reviewed as configuration.
 
+This repository includes `.github/workflows/openai-pr-review.yml` as its own
+internal caller and smoke-test wrapper. It intentionally calls the local
+reusable workflow so that a pull request can review the workflow revision it
+introduces. Other repositories should call the protected `@v1` reference shown
+above.
+
 ### Security and rollout
 
 - Store the API key as an organization secret restricted to an explicit

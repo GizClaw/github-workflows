@@ -1,0 +1,22 @@
+name: OpenAI PR review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  openai-review:
+    if: >-
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.head.repo.fork == false
+    uses: ./.github/workflows/codex-openai-review.yml
+    with:
+      model: gpt-5.6-terra
+      review-instructions: >-
+        Review only the pull-request diff and report actionable findings.
+    secrets:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
