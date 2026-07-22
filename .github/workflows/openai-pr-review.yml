@@ -13,4 +13,5 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Request trusted OpenAI review
-        run: echo "OpenAI review requested for pull request #${{ github.event.pull_request.number }}"
+        run: |
+          echo "OpenAI review requested for pull request #${{ github.event.pull_request.number }}"
