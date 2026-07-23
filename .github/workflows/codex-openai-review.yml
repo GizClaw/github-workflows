@@ -30,6 +30,11 @@ on:
         description: Pull request head commit SHA.
         required: true
         type: string
+      request_comment_id:
+        description: Optional PR timeline comment ID that triggered this review.
+        required: false
+        default: ''
+        type: string
     secrets:
       OPENAI_API_KEY:
         description: OpenAI API key supplied explicitly by the calling repository.
@@ -44,6 +49,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      issues: write
       pull-requests: read
     outputs:
       review: ${{ steps.codex.outputs.final-message }}
@@ -51,6 +57,7 @@ jobs:
       PULL_REQUEST_NUMBER: ${{ inputs.pull_request_number }}
       PR_BASE_SHA: ${{ inputs.base_sha }}
       PR_HEAD_SHA: ${{ inputs.head_sha }}
+      REQUEST_COMMENT_ID: ${{ inputs.request_comment_id }}
     steps:
       - name: Check out trusted pull-request base commit
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -74,6 +81,20 @@ jobs:
             });
             fs.writeFileSync(process.env.PR_DIFF_FILE, String(response.data), 'utf8');
             core.exportVariable('PR_DIFF_FILE', process.env.PR_DIFF_FILE);
+
+      - name: Mark manual request in progress
+        id: request_reaction
+        if: inputs.request_comment_id != ''
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          script: |
+            const { data: reaction } = await github.rest.reactions.createForIssueComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: Number(process.env.REQUEST_COMMENT_ID),
+              content: 'eyes',
+            });
+            core.setOutput('reaction_id', String(reaction.id));
 
       - name: Require OpenAI API key
         env:
@@ -128,6 +149,39 @@ jobs:
             ${{ inputs.review-instructions }}
 
             Return only the JSON object required by the output schema. Include only actionable findings that are introduced by this pull request. Every finding must identify an added line in the diff, using its exact repository-relative path and new-file line number; otherwise omit it. Use P0 for release-blocking defects, P1 for urgent defects, P2 for normal defects, and P3 for lower-priority defects. If there are no actionable findings, return an empty findings array and a concise summary.
+
+      - name: Record manual request result
+        if: always() && inputs.request_comment_id != ''
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          REQUEST_REACTION_ID: ${{ steps.request_reaction.outputs.reaction_id }}
+          REVIEW_OUTCOME: ${{ steps.codex.outcome }}
+        with:
+          script: |
+            const commentId = Number(process.env.REQUEST_COMMENT_ID);
+            const reactionId = Number(process.env.REQUEST_REACTION_ID);
+            if (Number.isSafeInteger(reactionId) && reactionId > 0) {
+              await github.request(
+                'DELETE /repos/{owner}/{repo}/issues/comments/{comment_id}/reactions/{reaction_id}',
+                {
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  comment_id: commentId,
+                  reaction_id: reactionId,
+                },
+              );
+            }
+            const resultReaction = process.env.REVIEW_OUTCOME === 'success'
+              ? 'rocket'
+              : process.env.REVIEW_OUTCOME === 'cancelled'
+                ? 'confused'
+                : '-1';
+            await github.rest.reactions.createForIssueComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: commentId,
+              content: resultReaction,
+            });
 
   publish:
     needs: review

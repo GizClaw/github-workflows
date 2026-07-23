@@ -29,14 +29,15 @@ service:
 - fork PRs and drafts are skipped.
 
 Every accepted manual-request comment acts as its own status record without
-adding timeline noise: `👀` means
-accepted/running, `🚀` means the review completed, `👎` means it failed, and
-`😕` means a newer request for the same PR superseded it. At startup, the run
-records both the trigger comment ID and the `👀` reaction ID returned by
-GitHub. Its final teardown job removes exactly that reaction and applies the
-terminal status, including `😕` for a concurrency cancellation. The repository-scoped
-`GITHUB_TOKEN` performs these reactions with the workflow's `issues: write`
-permission. Only the newest manual request runs at a time.
+adding timeline noise: `👀` means accepted/running, `🚀` means the review
+completed, `👎` means it failed, and `😕` means a newer request for the same PR
+superseded it. At startup, the reusable review job records both the trigger
+comment ID and the `👀` reaction ID returned by GitHub. That same job runs its
+`always()` teardown step with the same job token, removes exactly that
+reaction, and applies the terminal status, including `😕` for a concurrency
+cancellation. The repository-scoped `GITHUB_TOKEN` performs these reactions
+with the workflow's `issues: write` permission. Only the newest manual request
+runs at a time.
 
 The PR event is deliberately an unprivileged signal with no secret:
 

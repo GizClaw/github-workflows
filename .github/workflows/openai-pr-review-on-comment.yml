@@ -31,7 +31,6 @@ jobs:
       base_sha: ${{ steps.pr.outputs.base_sha }}
       head_sha: ${{ steps.pr.outputs.head_sha }}
       request_comment_id: ${{ steps.pr.outputs.request_comment_id }}
-      request_reaction_id: ${{ steps.reaction.outputs.reaction_id }}
     steps:
       - name: Authorize explicit review request
         id: pr
@@ -82,23 +81,6 @@ jobs:
             core.setOutput('base_sha', pullRequest.base.sha);
             core.setOutput('head_sha', pullRequest.head.sha);
 
-      - name: Mark manual request in progress
-        id: reaction
-        if: steps.pr.outputs.request_comment_id != ''
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
-        env:
-          REQUEST_COMMENT_ID: ${{ steps.pr.outputs.request_comment_id }}
-        with:
-          script: |
-            const commentId = Number(process.env.REQUEST_COMMENT_ID);
-            const { data: reaction } = await github.rest.reactions.createForIssueComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              comment_id: commentId,
-              content: 'eyes',
-            });
-            core.setOutput('reaction_id', String(reaction.id));
-
   review:
     needs: pull-request
     if: needs.pull-request.outputs.eligible == 'true'
@@ -111,49 +93,6 @@ jobs:
       pull_request_number: ${{ needs.pull-request.outputs.number }}
       base_sha: ${{ needs.pull-request.outputs.base_sha }}
       head_sha: ${{ needs.pull-request.outputs.head_sha }}
+      request_comment_id: ${{ needs.pull-request.outputs.request_comment_id }}
     secrets:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-
-  teardown-request:
-    needs: [pull-request, review]
-    if: always() && needs.pull-request.outputs.request_comment_id != ''
-    runs-on: ubuntu-latest
-    permissions:
-      issues: write
-    env:
-      REQUEST_COMMENT_ID: ${{ needs.pull-request.outputs.request_comment_id }}
-      REQUEST_REACTION_ID: ${{ needs.pull-request.outputs.request_reaction_id }}
-      REVIEW_RESULT: ${{ needs.review.result }}
-    steps:
-      - name: Record final manual request state
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
-        with:
-          script: |
-            const commentId = Number(process.env.REQUEST_COMMENT_ID);
-            const reactionId = Number(process.env.REQUEST_REACTION_ID);
-            if (Number.isSafeInteger(reactionId) && reactionId > 0) {
-              try {
-                await github.request(
-                  'DELETE /repos/{owner}/{repo}/issues/comments/{comment_id}/reactions/{reaction_id}',
-                  {
-                    owner: context.repo.owner,
-                    repo: context.repo.repo,
-                    comment_id: commentId,
-                    reaction_id: reactionId,
-                  },
-                );
-              } catch (error) {
-                if (error.status !== 404) throw error;
-              }
-            }
-            const resultReaction = process.env.REVIEW_RESULT === 'success'
-              ? 'rocket'
-              : process.env.REVIEW_RESULT === 'cancelled'
-                ? 'confused'
-                : '-1';
-            await github.rest.reactions.createForIssueComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              comment_id: commentId,
-              content: resultReaction,
-            });
