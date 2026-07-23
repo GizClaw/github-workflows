@@ -107,6 +107,7 @@ jobs:
     outputs:
       check_run_id: ${{ steps.status.outputs.check_run_id }}
       request_reaction_id: ${{ steps.status.outputs.request_reaction_id }}
+      failure_reason: ${{ steps.status.outputs.failure_reason }}
     steps:
       - name: Mark review in progress
         id: status
@@ -155,18 +156,13 @@ jobs:
                 core.setOutput('request_reaction_id', String(reaction.id));
               }
             } catch (error) {
-              if (Number.isSafeInteger(commentId) && commentId > 0) {
-                try {
-                  await github.rest.reactions.createForIssueComment({
-                    owner: context.repo.owner,
-                    repo: context.repo.repo,
-                    comment_id: commentId,
-                    content: '-1',
-                  });
-                } catch {
-                  // Preserve the original status-start failure.
-                }
-              }
+              const detail = String(error?.message ?? error)
+                .replace(/\s+/g, ' ')
+                .slice(0, 500);
+              core.setOutput(
+                'failure_reason',
+                `Could not start the review status: ${detail}`,
+              );
               throw error;
             }
 
@@ -187,6 +183,14 @@ jobs:
       output_tokens: ${{ steps.metrics.outputs.output_tokens }}
       reasoning_output_tokens: ${{ steps.metrics.outputs.reasoning_output_tokens }}
       total_tokens: ${{ steps.metrics.outputs.total_tokens }}
+      failure_reason: >-
+        ${{ steps.fetch_diff.outputs.failure_reason
+          || steps.context.outputs.failure_reason
+          || steps.api_key.outputs.failure_reason
+          || (steps.checkout.outcome == 'failure' && 'Could not check out the trusted pull-request base commit.')
+          || (steps.codex.outcome == 'failure' && 'Codex failed before it produced a review result.')
+          || (steps.metrics.outcome == 'failure' && 'The review completed, but its time and token metrics could not be collected.')
+          || '' }}
     env:
       PULL_REQUEST_NUMBER: ${{ needs.resolve.outputs.number }}
       PR_BASE_SHA: ${{ needs.resolve.outputs.base_sha }}
@@ -194,6 +198,7 @@ jobs:
       REQUEST_COMMENT_ID: ${{ needs.resolve.outputs.request_comment_id }}
     steps:
       - name: Check out trusted pull-request base commit
+        id: checkout
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           ref: ${{ needs.resolve.outputs.base_sha }}
@@ -201,6 +206,7 @@ jobs:
           persist-credentials: false
 
       - name: Fetch pull-request diff without checking out its code
+        id: fetch_diff
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         env:
           PR_DIFF_FILE: ${{ runner.temp }}/openai-pr-${{ needs.resolve.outputs.number }}.diff
@@ -208,22 +214,34 @@ jobs:
           script: |
             const fs = require('node:fs');
             const maxDiffBytes = 1_000_000;
-            const response = await github.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: Number(process.env.PULL_REQUEST_NUMBER),
-              headers: { accept: 'application/vnd.github.v3.diff' },
-            });
-            const diff = String(response.data);
-            const diffBytes = Buffer.byteLength(diff, 'utf8');
-            if (diffBytes > maxDiffBytes) {
-              core.setFailed(`Pull-request diff is ${diffBytes} bytes; the review limit is ${maxDiffBytes} bytes.`);
-              return;
+            try {
+              const response = await github.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: Number(process.env.PULL_REQUEST_NUMBER),
+                headers: { accept: 'application/vnd.github.v3.diff' },
+              });
+              const diff = String(response.data);
+              const diffBytes = Buffer.byteLength(diff, 'utf8');
+              if (diffBytes > maxDiffBytes) {
+                const reason = `Pull-request diff is ${diffBytes} bytes; the review limit is ${maxDiffBytes} bytes.`;
+                core.setOutput('failure_reason', reason);
+                core.setFailed(reason);
+                return;
+              }
+              fs.writeFileSync(process.env.PR_DIFF_FILE, diff, 'utf8');
+              core.exportVariable('PR_DIFF_FILE', process.env.PR_DIFF_FILE);
+            } catch (error) {
+              const message = String(error?.message ?? error);
+              const reason = error?.status === 406 && message.includes('20000')
+                ? "Pull-request diff exceeds GitHub's 20,000-line API limit."
+                : `Could not fetch the pull-request diff: ${message.replace(/\s+/g, ' ').slice(0, 500)}`;
+              core.setOutput('failure_reason', reason);
+              core.setFailed(reason);
             }
-            fs.writeFileSync(process.env.PR_DIFF_FILE, diff, 'utf8');
-            core.exportVariable('PR_DIFF_FILE', process.env.PR_DIFF_FILE);
 
       - name: Collect untrusted pull-request discussion context
+        id: context
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         env:
           PR_CONTEXT_FILE: ${{ runner.temp }}/openai-pr-${{ needs.resolve.outputs.number }}-context.json
@@ -231,31 +249,42 @@ jobs:
           script: |
             const fs = require('node:fs');
             const clip = (value, length) => String(value ?? '').slice(0, length);
-            const { data: pullRequest } = await github.rest.pulls.get({
-              owner: context.repo.owner, repo: context.repo.repo,
-              pull_number: Number(process.env.PULL_REQUEST_NUMBER),
-            });
-            const comments = await github.paginate(github.rest.issues.listComments, {
-              owner: context.repo.owner, repo: context.repo.repo,
-              issue_number: Number(process.env.PULL_REQUEST_NUMBER), per_page: 100,
-            });
-            const discussion = {
-              pull_request: { title: clip(pullRequest.title, 500), body: clip(pullRequest.body, 6_000) },
-              trigger_comment_id: process.env.REQUEST_COMMENT_ID || null,
-              comments: comments.slice(-20).map((comment) => ({
-                author: comment.user.login, association: comment.author_association,
-                created_at: comment.created_at, body: clip(comment.body, 600),
-              })),
-            };
-            fs.writeFileSync(process.env.PR_CONTEXT_FILE, JSON.stringify(discussion), 'utf8');
-            core.exportVariable('PR_CONTEXT_FILE', process.env.PR_CONTEXT_FILE);
+            try {
+              const { data: pullRequest } = await github.rest.pulls.get({
+                owner: context.repo.owner, repo: context.repo.repo,
+                pull_number: Number(process.env.PULL_REQUEST_NUMBER),
+              });
+              const comments = await github.paginate(github.rest.issues.listComments, {
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: Number(process.env.PULL_REQUEST_NUMBER), per_page: 100,
+              });
+              const discussion = {
+                pull_request: { title: clip(pullRequest.title, 500), body: clip(pullRequest.body, 6_000) },
+                trigger_comment_id: process.env.REQUEST_COMMENT_ID || null,
+                comments: comments.slice(-20).map((comment) => ({
+                  author: comment.user.login, association: comment.author_association,
+                  created_at: comment.created_at, body: clip(comment.body, 600),
+                })),
+              };
+              fs.writeFileSync(process.env.PR_CONTEXT_FILE, JSON.stringify(discussion), 'utf8');
+              core.exportVariable('PR_CONTEXT_FILE', process.env.PR_CONTEXT_FILE);
+            } catch (error) {
+              const detail = String(error?.message ?? error)
+                .replace(/\s+/g, ' ')
+                .slice(0, 500);
+              const reason = `Could not read the pull-request discussion context: ${detail}`;
+              core.setOutput('failure_reason', reason);
+              core.setFailed(reason);
+            }
 
       - name: Require OpenAI API key
+        id: api_key
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           if [ -z "$OPENAI_API_KEY" ]; then
             echo "::error title=Missing OPENAI_API_KEY::Pass the required OPENAI_API_KEY organization secret explicitly from the calling workflow."
+            echo "failure_reason=The calling repository did not provide its required OPENAI_API_KEY secret." >> "$GITHUB_OUTPUT"
             exit 1
           fi
       - name: Record review start time
@@ -376,8 +405,14 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
+    outputs:
+      failure_reason: >-
+        ${{ steps.publish.outputs.failure_reason
+          || (steps.publish.outcome == 'failure' && 'GitHub could not publish the generated pull-request review.')
+          || '' }}
     steps:
       - name: Publish native pull-request review
+        id: publish
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         env:
           REVIEW: ${{ needs.review.outputs.review }}
@@ -422,7 +457,9 @@ jobs:
             });
 
             if (pullRequest.head.sha !== process.env.PR_HEAD_SHA) {
-              core.setFailed('Pull-request head changed while the review was running; skipping a stale review.');
+              const reason = 'Pull-request head changed while the review was running; the stale review was not published.';
+              core.setOutput('failure_reason', reason);
+              core.setFailed(reason);
               return;
             }
 
@@ -533,11 +570,15 @@ jobs:
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         env:
           CHECK_RUN_ID: ${{ needs.start.outputs.check_run_id }}
+          PULL_REQUEST_NUMBER: ${{ needs.resolve.outputs.number }}
           REQUEST_COMMENT_ID: ${{ needs.resolve.outputs.request_comment_id }}
           REQUEST_REACTION_ID: ${{ needs.start.outputs.request_reaction_id }}
           START_RESULT: ${{ needs.start.result }}
           REVIEW_RESULT: ${{ needs.review.result }}
           PUBLISH_RESULT: ${{ needs.publish.result }}
+          START_FAILURE_REASON: ${{ needs.start.outputs.failure_reason }}
+          REVIEW_FAILURE_REASON: ${{ needs.review.outputs.failure_reason }}
+          PUBLISH_FAILURE_REASON: ${{ needs.publish.outputs.failure_reason }}
           DETAILS_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         with:
           script: |
@@ -553,15 +594,26 @@ jobs:
               : cancelled
                 ? 'cancelled'
                 : 'failure';
+            const failureReason = [
+              process.env.START_FAILURE_REASON,
+              process.env.REVIEW_FAILURE_REASON,
+              process.env.PUBLISH_FAILURE_REASON,
+            ].find(Boolean);
+            const safeFailureReason = String(
+              failureReason || 'The workflow stopped unexpectedly before reporting a more specific reason.',
+            )
+              .replace(/\s+/g, ' ')
+              .replaceAll('@', '@\u200b')
+              .slice(0, 1_000);
             const resultSummary = {
               success: 'OpenAI review completed and was published.',
               cancelled: 'This review was superseded or cancelled.',
-              failure: 'OpenAI review did not complete successfully.',
+              failure: `**Reason:** ${safeFailureReason}`,
             }[conclusion];
             const summary = [
               resultSummary,
               `[Open the Actions run](${process.env.DETAILS_URL}).`,
-            ].join(' ');
+            ].join('\n\n');
 
             const checkRunId = Number(process.env.CHECK_RUN_ID);
             if (Number.isSafeInteger(checkRunId) && checkRunId > 0) {
@@ -576,10 +628,23 @@ jobs:
                   title: {
                     success: 'Review completed',
                     cancelled: 'Review cancelled',
-                    failure: 'Review failed',
+                    failure: 'Review completed with an error',
                   }[conclusion],
                   summary,
                 },
+              });
+            }
+
+            if (conclusion === 'failure') {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: Number(process.env.PULL_REQUEST_NUMBER),
+                body: [
+                  '## 🤖 OpenAI PR review completed with an error',
+                  `**Reason:** ${safeFailureReason}`,
+                  `[Open the Actions run](${process.env.DETAILS_URL}).`,
+                ].join('\n\n'),
               });
             }
 
@@ -632,6 +697,6 @@ jobs:
               content: {
                 success: 'rocket',
                 cancelled: 'confused',
-                failure: '-1',
+                failure: 'rocket',
               }[conclusion],
             });

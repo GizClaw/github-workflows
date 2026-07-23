@@ -30,11 +30,14 @@ shared reviewer can expose its lifecycle on the reviewed PR head, and
   `@codex review <focus>`.
 - **Run workflow** accepts a pull-request number as a manual fallback.
 - A new request for the same PR cancels the previous one. Request comments use
-  `👀` while running, `🚀` on success, `😕` when superseded, and `👎` on failure.
+  `👀` while running, `🚀` when finished (including a failed attempt), and `😕`
+  when superseded or cancelled.
 - Every accepted review creates an `OpenAI PR review` Check Run on the exact PR
   head commit. The check links to its Actions run and reports running,
   successful, failed, or cancelled state in the PR Checks UI. Comment-triggered
   reviews continue to execute from the trusted default-branch workflow.
+- A failed attempt publishes a titled PR comment with the specific failure
+  reason and a link to the Actions run instead of leaving only a reaction.
 - Every published review reports the Codex review time and its total, input,
   cached-input, output, and reasoning-output token counts. Cached-input tokens
   are part of input tokens, and reasoning-output tokens are part of output
