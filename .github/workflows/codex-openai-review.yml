@@ -64,7 +64,7 @@ jobs:
             const event = context.eventName;
             let number;
             let requestCommentId = '';
-            if (event === 'pull_request') {
+            if (event === 'pull_request' || event === 'pull_request_target') {
               number = context.payload.pull_request.number;
             } else if (event === 'issue_comment') {
               if (!context.payload.issue.pull_request) return core.setOutput('eligible', 'false');
@@ -80,7 +80,16 @@ jobs:
               return core.setOutput('eligible', 'false');
             }
             const { data: pr } = await github.rest.pulls.get({ owner: context.repo.owner, repo: context.repo.repo, pull_number: Number(number) });
-            const eligible = pr.state === 'open' && !pr.draft && pr.head.repo?.fork === false;
+            const sameRepository = pr.head.repo?.full_name?.toLowerCase()
+              === `${context.repo.owner}/${context.repo.repo}`.toLowerCase();
+            const trustedBaseEvent = [
+              'pull_request_target',
+              'issue_comment',
+              'workflow_dispatch',
+            ].includes(event);
+            const eligible = pr.state === 'open'
+              && !pr.draft
+              && (sameRepository || trustedBaseEvent);
             core.setOutput('eligible', String(eligible));
             core.setOutput('number', String(pr.number));
             core.setOutput('base_sha', pr.base.sha);
@@ -191,13 +200,20 @@ jobs:
         with:
           script: |
             const fs = require('node:fs');
+            const maxDiffBytes = 1_000_000;
             const response = await github.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
               owner: context.repo.owner,
               repo: context.repo.repo,
               pull_number: Number(process.env.PULL_REQUEST_NUMBER),
               headers: { accept: 'application/vnd.github.v3.diff' },
             });
-            fs.writeFileSync(process.env.PR_DIFF_FILE, String(response.data), 'utf8');
+            const diff = String(response.data);
+            const diffBytes = Buffer.byteLength(diff, 'utf8');
+            if (diffBytes > maxDiffBytes) {
+              core.setFailed(`Pull-request diff is ${diffBytes} bytes; the review limit is ${maxDiffBytes} bytes.`);
+              return;
+            }
+            fs.writeFileSync(process.env.PR_DIFF_FILE, diff, 'utf8');
             core.exportVariable('PR_DIFF_FILE', process.env.PR_DIFF_FILE);
 
       - name: Collect untrusted pull-request discussion context
@@ -240,6 +256,7 @@ jobs:
         uses: openai/codex-action@52fe01ec70a42f454c9d2ebd47598f9fd6893d56 # v1
         with:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          allow-users: '*'
           model: ${{ inputs.model }}
           effort: ${{ inputs.effort }}
           sandbox: read-only

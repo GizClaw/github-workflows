@@ -23,10 +23,11 @@ shared reviewer can expose its lifecycle on the reviewed PR head, and
 
 ## Behavior
 
-- Reviews an open, non-draft, non-fork PR when it is first created. Later
-  pushes do not start another review.
+- Reviews an open, non-draft PR when it is first created, including a PR from
+  an external fork. Later pushes do not start another review.
 - A collaborator with `write`, `maintain`, or `admin` permission can request a
-  fresh review using `@codex` or `@codex review <focus>`.
+  fresh review of an internal or fork PR using `@codex` or
+  `@codex review <focus>`.
 - **Run workflow** accepts a pull-request number as a manual fallback.
 - A new request for the same PR cancels the previous one. Request comments use
   `👀` while running, `🚀` on success, `😕` when superseded, and `👎` on failure.
@@ -34,9 +35,19 @@ shared reviewer can expose its lifecycle on the reviewed PR head, and
   head commit. The check links to its Actions run and reports running,
   successful, failed, or cancelled state in the PR Checks UI. Comment-triggered
   reviews continue to execute from the trusted default-branch workflow.
+- Fork PRs run through the caller repository's trusted default-branch
+  `pull_request_target` workflow and use the caller's explicitly forwarded
+  secret. Secrets from the contributor's fork are not imported or used.
+- Opening an eligible PR intentionally permits an external contributor to
+  consume one review request. Use a dedicated API project with appropriate
+  usage limits and restrict the organization secret to selected repositories.
+- Diffs larger than 1 MB fail before Codex runs, limiting untrusted input and
+  avoiding unbounded model usage.
 - The reviewer checks out only the trusted base commit, reads the PR diff as
-  data, never executes PR-head code, and publishes validated native inline
-  review comments only on added lines.
+  untrusted data, never checks out or executes PR-head code, and publishes
+  validated native inline review comments only on added lines.
 
-Do not use `pull_request_target`, do not use `secrets: inherit`, and restrict
-the organization secret to the repositories that should be allowed to review.
+Use `pull_request_target` only with this trusted-base, diff-as-data design.
+Never check out or execute the pull-request head or merge ref, do not use
+`secrets: inherit`, and restrict the organization secret to the repositories
+that should be allowed to review.
