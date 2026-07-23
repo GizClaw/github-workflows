@@ -87,8 +87,78 @@ jobs:
             core.setOutput('head_sha', pr.head.sha);
             core.setOutput('request_comment_id', requestCommentId);
 
-  review:
+  start:
     needs: resolve
+    if: needs.resolve.outputs.eligible == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      checks: write
+      issues: write
+    outputs:
+      check_run_id: ${{ steps.status.outputs.check_run_id }}
+      request_reaction_id: ${{ steps.status.outputs.request_reaction_id }}
+    steps:
+      - name: Mark review in progress
+        id: status
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          PR_HEAD_SHA: ${{ needs.resolve.outputs.head_sha }}
+          REQUEST_COMMENT_ID: ${{ needs.resolve.outputs.request_comment_id }}
+          DETAILS_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          PULL_REQUEST_NUMBER: ${{ needs.resolve.outputs.number }}
+        with:
+          script: |
+            const commentId = Number(process.env.REQUEST_COMMENT_ID);
+            try {
+              const { data: checkRun } = await github.rest.checks.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                name: 'OpenAI PR review',
+                head_sha: process.env.PR_HEAD_SHA,
+                status: 'in_progress',
+                started_at: new Date().toISOString(),
+                details_url: process.env.DETAILS_URL,
+                external_id: [
+                  process.env.RUN_ID,
+                  process.env.RUN_ATTEMPT,
+                  process.env.PULL_REQUEST_NUMBER,
+                ].join(':'),
+                output: {
+                  title: 'Review in progress',
+                  summary: 'OpenAI is reviewing this pull request.',
+                },
+              });
+              core.setOutput('check_run_id', String(checkRun.id));
+
+              if (Number.isSafeInteger(commentId) && commentId > 0) {
+                const { data: reaction } = await github.rest.reactions.createForIssueComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  comment_id: commentId,
+                  content: 'eyes',
+                });
+                core.setOutput('request_reaction_id', String(reaction.id));
+              }
+            } catch (error) {
+              if (Number.isSafeInteger(commentId) && commentId > 0) {
+                try {
+                  await github.rest.reactions.createForIssueComment({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    comment_id: commentId,
+                    content: '-1',
+                  });
+                } catch {
+                  // Preserve the original status-start failure.
+                }
+              }
+              throw error;
+            }
+
+  review:
+    needs: [resolve, start]
     if: needs.resolve.outputs.eligible == 'true'
     runs-on: ubuntu-latest
     permissions:
@@ -153,20 +223,6 @@ jobs:
             fs.writeFileSync(process.env.PR_CONTEXT_FILE, JSON.stringify(discussion), 'utf8');
             core.exportVariable('PR_CONTEXT_FILE', process.env.PR_CONTEXT_FILE);
 
-      - name: Mark manual request in progress
-        id: request_reaction
-        if: needs.resolve.outputs.request_comment_id != ''
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
-        with:
-          script: |
-            const { data: reaction } = await github.rest.reactions.createForIssueComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              comment_id: Number(process.env.REQUEST_COMMENT_ID),
-              content: 'eyes',
-            });
-            core.setOutput('reaction_id', String(reaction.id));
-
       - name: Require OpenAI API key
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -222,39 +278,6 @@ jobs:
             ${{ inputs.review-instructions }}
 
             Return only the JSON object required by the output schema. Include only actionable findings that are introduced by this pull request. Every finding must identify an added line in the diff, using its exact repository-relative path and new-file line number; otherwise omit it. Use P0 for release-blocking defects, P1 for urgent defects, P2 for normal defects, and P3 for lower-priority defects. If there are no actionable findings, return an empty findings array and a concise summary.
-
-      - name: Record manual request result
-        if: always() && needs.resolve.outputs.request_comment_id != ''
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
-        env:
-          REQUEST_REACTION_ID: ${{ steps.request_reaction.outputs.reaction_id }}
-          REVIEW_OUTCOME: ${{ steps.codex.outcome }}
-        with:
-          script: |
-            const commentId = Number(process.env.REQUEST_COMMENT_ID);
-            const reactionId = Number(process.env.REQUEST_REACTION_ID);
-            if (Number.isSafeInteger(reactionId) && reactionId > 0) {
-              await github.request(
-                'DELETE /repos/{owner}/{repo}/issues/comments/{comment_id}/reactions/{reaction_id}',
-                {
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  comment_id: commentId,
-                  reaction_id: reactionId,
-                },
-              );
-            }
-            const resultReaction = process.env.REVIEW_OUTCOME === 'success'
-              ? 'rocket'
-              : process.env.REVIEW_OUTCOME === 'cancelled'
-                ? 'confused'
-                : '-1';
-            await github.rest.reactions.createForIssueComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              comment_id: commentId,
-              content: resultReaction,
-            });
 
   publish:
     needs: [resolve, review]
@@ -379,4 +402,114 @@ jobs:
               event: 'COMMENT',
               body,
               comments: inlineFindings,
+            });
+
+  finalize:
+    needs: [resolve, start, review, publish]
+    if: always() && needs.resolve.outputs.eligible == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      checks: write
+      issues: write
+    steps:
+      - name: Record review result
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          CHECK_RUN_ID: ${{ needs.start.outputs.check_run_id }}
+          REQUEST_COMMENT_ID: ${{ needs.resolve.outputs.request_comment_id }}
+          REQUEST_REACTION_ID: ${{ needs.start.outputs.request_reaction_id }}
+          START_RESULT: ${{ needs.start.result }}
+          REVIEW_RESULT: ${{ needs.review.result }}
+          PUBLISH_RESULT: ${{ needs.publish.result }}
+        with:
+          script: |
+            const results = [
+              process.env.START_RESULT,
+              process.env.REVIEW_RESULT,
+              process.env.PUBLISH_RESULT,
+            ];
+            const cancelled = results.includes('cancelled');
+            const succeeded = results.every((result) => result === 'success');
+            const conclusion = succeeded
+              ? 'success'
+              : cancelled
+                ? 'cancelled'
+                : 'failure';
+            const summary = {
+              success: 'OpenAI review completed and was published.',
+              cancelled: 'This review was superseded or cancelled.',
+              failure: 'OpenAI review did not complete successfully.',
+            }[conclusion];
+
+            const checkRunId = Number(process.env.CHECK_RUN_ID);
+            if (Number.isSafeInteger(checkRunId) && checkRunId > 0) {
+              await github.rest.checks.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                check_run_id: checkRunId,
+                status: 'completed',
+                conclusion,
+                completed_at: new Date().toISOString(),
+                output: {
+                  title: {
+                    success: 'Review completed',
+                    cancelled: 'Review cancelled',
+                    failure: 'Review failed',
+                  }[conclusion],
+                  summary,
+                },
+              });
+            }
+
+            const commentId = Number(process.env.REQUEST_COMMENT_ID);
+            if (!Number.isSafeInteger(commentId) || commentId < 1) return;
+
+            const reactionId = Number(process.env.REQUEST_REACTION_ID);
+            if (Number.isSafeInteger(reactionId) && reactionId > 0) {
+              await github.request(
+                'DELETE /repos/{owner}/{repo}/issues/comments/{comment_id}/reactions/{reaction_id}',
+                {
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  comment_id: commentId,
+                  reaction_id: reactionId,
+                },
+              );
+            } else {
+              const reactions = await github.paginate(
+                github.rest.reactions.listForIssueComment,
+                {
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  comment_id: commentId,
+                  per_page: 100,
+                },
+              );
+              for (const reaction of reactions) {
+                if (
+                  reaction.content === 'eyes' &&
+                  reaction.user?.login === 'github-actions[bot]'
+                ) {
+                  await github.request(
+                    'DELETE /repos/{owner}/{repo}/issues/comments/{comment_id}/reactions/{reaction_id}',
+                    {
+                      owner: context.repo.owner,
+                      repo: context.repo.repo,
+                      comment_id: commentId,
+                      reaction_id: reaction.id,
+                    },
+                  );
+                }
+              }
+            }
+
+            await github.rest.reactions.createForIssueComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: commentId,
+              content: {
+                success: 'rocket',
+                cancelled: 'confused',
+                failure: '-1',
+              }[conclusion],
             });

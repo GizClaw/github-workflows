@@ -13,7 +13,9 @@ on:
         type: string
 
 permissions:
+  checks: write
   contents: read
+  issues: write
   pull-requests: write
 
 concurrency:

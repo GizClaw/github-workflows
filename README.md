@@ -17,7 +17,9 @@ uses: GizClaw/github-workflows/.github/workflows/codex-openai-review.yml@v1
 
 It must pass an `OPENAI_API_KEY` Actions secret explicitly. Set `model`,
 `effort`, and `review-instructions` in that one caller file to match the
-repository's review policy.
+repository's review policy. The caller must grant `checks: write` so the
+shared reviewer can expose its lifecycle on the reviewed PR head, and
+`issues: write` for request reactions.
 
 ## Behavior
 
@@ -28,6 +30,10 @@ repository's review policy.
 - **Run workflow** accepts a pull-request number as a manual fallback.
 - A new request for the same PR cancels the previous one. Request comments use
   `👀` while running, `🚀` on success, `😕` when superseded, and `👎` on failure.
+- Every accepted review creates an `OpenAI PR review` Check Run on the exact PR
+  head commit. The check links to its Actions run and reports running,
+  successful, failed, or cancelled state in the PR Checks UI. Comment-triggered
+  reviews continue to execute from the trusted default-branch workflow.
 - The reviewer checks out only the trusted base commit, reads the PR diff as
   data, never executes PR-head code, and publishes validated native inline
   review comments only on added lines.
