@@ -19,7 +19,9 @@ It must pass an `OPENAI_API_KEY` Actions secret explicitly. Set `model`,
 `effort`, and `review-instructions` in that one caller file to match the
 repository's review policy. The caller must grant `checks: write` so the
 shared reviewer can expose its lifecycle on the reviewed PR head, and
-`issues: write` for request reactions.
+`issues: write` for request reactions. It must also grant `actions: write` so
+the reviewer can restore the latest per-PR Codex session artifact and delete
+superseded snapshots only after a replacement upload succeeds.
 
 ## Behavior
 
@@ -38,10 +40,16 @@ shared reviewer can expose its lifecycle on the reviewed PR head, and
   reviews continue to execute from the trusted default-branch workflow.
 - A failed attempt publishes a titled PR comment with the specific failure
   reason and a link to the Actions run instead of leaving only a reaction.
-- Every published review reports the Codex review time and its total, input,
-  cached-input, output, and reasoning-output token counts. Cached-input tokens
-  are part of input tokens, and reasoning-output tokens are part of output
-  tokens; neither is added to the total a second time.
+- Every published review reports the Codex review time, input, cached-input,
+  cache-write, output, reasoning-output, and total token counts, plus the cache
+  hit ratio. Cached-input tokens are part of input tokens, and reasoning-output
+  tokens are part of output tokens; neither is added to the total a second
+  time.
+- Each PR has one logical Codex session. A completed review uploads a validated
+  session snapshot with 30-day retention. The next review resumes the newest
+  compatible snapshot, reports only that run's token delta, and deletes older
+  snapshots only after the new upload succeeds. A missing, expired, corrupt,
+  or incompatible snapshot safely starts a new session.
 - Fork PRs run through the caller repository's trusted default-branch
   `pull_request_target` workflow and use the caller's explicitly forwarded
   secret. Secrets from the contributor's fork are not imported or used.

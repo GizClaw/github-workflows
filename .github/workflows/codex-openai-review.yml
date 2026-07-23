@@ -13,6 +13,11 @@ on:
         required: false
         default: medium
         type: string
+      codex-version:
+        description: Exact Codex CLI version used so persisted sessions remain compatible.
+        required: false
+        default: 0.145.0
+        type: string
       review-instructions:
         description: Additional caller-owned instructions for the review.
         required: false
@@ -171,6 +176,7 @@ jobs:
     if: needs.resolve.outputs.eligible == 'true'
     runs-on: ubuntu-latest
     permissions:
+      actions: write
       contents: read
       issues: write
       pull-requests: write
@@ -180,6 +186,8 @@ jobs:
       usage_available: ${{ steps.metrics.outputs.usage_available }}
       input_tokens: ${{ steps.metrics.outputs.input_tokens }}
       cached_input_tokens: ${{ steps.metrics.outputs.cached_input_tokens }}
+      cache_write_tokens: ${{ steps.metrics.outputs.cache_write_tokens }}
+      cache_hit_ratio: ${{ steps.metrics.outputs.cache_hit_ratio }}
       output_tokens: ${{ steps.metrics.outputs.output_tokens }}
       reasoning_output_tokens: ${{ steps.metrics.outputs.reasoning_output_tokens }}
       total_tokens: ${{ steps.metrics.outputs.total_tokens }}
@@ -196,7 +204,18 @@ jobs:
       PR_BASE_SHA: ${{ needs.resolve.outputs.base_sha }}
       PR_HEAD_SHA: ${{ needs.resolve.outputs.head_sha }}
       REQUEST_COMMENT_ID: ${{ needs.resolve.outputs.request_comment_id }}
+      SESSION_ARTIFACT_PREFIX: openai-pr-review-session-v1-${{ github.repository_id }}-pr-${{ needs.resolve.outputs.number }}-
+      SESSION_ARTIFACT_NAME: openai-pr-review-session-v1-${{ github.repository_id }}-pr-${{ needs.resolve.outputs.number }}-run-${{ github.run_id }}-attempt-${{ github.run_attempt }}
     steps:
+      - name: Initialize PR review session paths
+        run: |
+          {
+            echo "CODEX_HOME=$RUNNER_TEMP/openai-pr-review-codex-home"
+            echo "SESSION_DOWNLOAD_DIR=$RUNNER_TEMP/openai-pr-review-session-download"
+            echo "SESSION_SNAPSHOT_DIR=$RUNNER_TEMP/openai-pr-review-session-snapshot"
+            echo "SESSION_BASELINE_FILE=$RUNNER_TEMP/openai-pr-review-token-baseline.json"
+          } >> "$GITHUB_ENV"
+
       - name: Check out trusted pull-request base commit
         id: checkout
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -287,6 +306,190 @@ jobs:
             echo "failure_reason=The calling repository did not provide its required OPENAI_API_KEY secret." >> "$GITHUB_OUTPUT"
             exit 1
           fi
+
+      - name: Find latest PR review session
+        id: find_session
+        continue-on-error: true
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          SESSION_ARTIFACT_PREFIX: ${{ env.SESSION_ARTIFACT_PREFIX }}
+        with:
+          script: |
+            const artifacts = await github.paginate(
+              github.rest.actions.listArtifactsForRepo,
+              {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                per_page: 100,
+              },
+            );
+            const latest = artifacts
+              .filter((artifact) => (
+                artifact.name.startsWith(process.env.SESSION_ARTIFACT_PREFIX)
+                && !artifact.expired
+              ))
+              .sort((left, right) => (
+                Date.parse(right.created_at) - Date.parse(left.created_at)
+              ))[0];
+            core.setOutput('found', String(Boolean(latest)));
+            core.setOutput('artifact_id', latest ? String(latest.id) : '');
+            core.setOutput(
+              'run_id',
+              latest?.workflow_run?.id ? String(latest.workflow_run.id) : '',
+            );
+
+      - name: Download latest PR review session
+        id: download_session
+        if: steps.find_session.outputs.found == 'true'
+        continue-on-error: true
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          artifact-ids: ${{ steps.find_session.outputs.artifact_id }}
+          path: ${{ env.SESSION_DOWNLOAD_DIR }}
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ steps.find_session.outputs.run_id }}
+          merge-multiple: true
+
+      - name: Restore and validate PR review session
+        id: restore_session
+        continue-on-error: true
+        env:
+          EXPECTED_ARTIFACT_ID: ${{ steps.find_session.outputs.artifact_id }}
+          EXPECTED_CODEX_VERSION: ${{ inputs.codex-version }}
+          EXPECTED_MODEL: ${{ inputs.model }}
+          EXPECTED_EFFORT: ${{ inputs.effort }}
+          REPOSITORY_ID: ${{ github.repository_id }}
+          REVIEW_INSTRUCTIONS: ${{ inputs.review-instructions }}
+        run: |
+          node <<'NODE'
+          const crypto = require('node:crypto');
+          const fs = require('node:fs');
+          const path = require('node:path');
+
+          const output = (name, value) => {
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, `${name}=${value}\n`);
+          };
+          const emptyBaseline = {
+            input_tokens: 0,
+            cached_input_tokens: 0,
+            cache_write_input_tokens: 0,
+            output_tokens: 0,
+            reasoning_output_tokens: 0,
+            total_tokens: 0,
+          };
+          const writeBaseline = (usage = emptyBaseline) => {
+            fs.writeFileSync(
+              process.env.SESSION_BASELINE_FILE,
+              `${JSON.stringify(usage)}\n`,
+              { mode: 0o600 },
+            );
+          };
+          const coldStart = (reason) => {
+            if (reason) process.stdout.write(`::warning title=Session restore skipped::${reason}\n`);
+            writeBaseline();
+            output('resumed', 'false');
+            output('session_id', '');
+            output('codex_args', '[]');
+            output('previous_artifact_id', '');
+          };
+
+          const manifestPath = path.join(
+            process.env.SESSION_DOWNLOAD_DIR,
+            'manifest.json',
+          );
+          const sessionPath = path.join(
+            process.env.SESSION_DOWNLOAD_DIR,
+            'session.jsonl',
+          );
+          if (!fs.existsSync(manifestPath) || !fs.existsSync(sessionPath)) {
+            coldStart(process.env.EXPECTED_ARTIFACT_ID
+              ? 'The latest artifact was unavailable or incomplete; starting a new session.'
+              : '');
+            process.exit(0);
+          }
+
+          try {
+            const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+            const expected = {
+              schema_version: 1,
+              repository_id: String(process.env.REPOSITORY_ID),
+              pull_request: Number(process.env.PULL_REQUEST_NUMBER),
+              model: process.env.EXPECTED_MODEL,
+              effort: process.env.EXPECTED_EFFORT,
+              codex_version: process.env.EXPECTED_CODEX_VERSION,
+              review_instructions_sha256: crypto
+                .createHash('sha256')
+                .update(process.env.REVIEW_INSTRUCTIONS)
+                .digest('hex'),
+            };
+            for (const [key, value] of Object.entries(expected)) {
+              if (String(manifest[key]) !== String(value)) {
+                throw new Error(`manifest ${key} does not match`);
+              }
+            }
+            if (!/^[0-9a-f-]{36}$/i.test(String(manifest.session_id))) {
+              throw new Error('manifest session_id is invalid');
+            }
+            if (!/^sessions\/\d{4}\/\d{2}\/\d{2}\/[^/]+\.jsonl$/.test(
+              String(manifest.session_relative_path),
+            )) {
+              throw new Error('manifest session path is invalid');
+            }
+            const sessionHash = crypto
+              .createHash('sha256')
+              .update(fs.readFileSync(sessionPath))
+              .digest('hex');
+            if (sessionHash !== manifest.session_sha256) {
+              throw new Error('session SHA-256 does not match');
+            }
+
+            const firstLines = fs.readFileSync(sessionPath, 'utf8')
+              .split('\n', 8);
+            const metadata = firstLines
+              .filter(Boolean)
+              .map((line) => JSON.parse(line))
+              .find((item) => item.type === 'session_meta');
+            if (metadata?.payload?.id !== manifest.session_id) {
+              throw new Error('session metadata ID does not match');
+            }
+
+            let baseline = emptyBaseline;
+            for (const line of fs.readFileSync(sessionPath, 'utf8').split('\n')) {
+              if (!line) continue;
+              try {
+                const item = JSON.parse(line);
+                if (
+                  item.type === 'event_msg'
+                  && item.payload?.type === 'token_count'
+                  && item.payload.info?.total_token_usage
+                ) {
+                  baseline = item.payload.info.total_token_usage;
+                }
+              } catch {
+                // A partial trailing JSONL record is ignored.
+              }
+            }
+
+            const destination = path.join(
+              process.env.CODEX_HOME,
+              manifest.session_relative_path,
+            );
+            fs.mkdirSync(path.dirname(destination), { recursive: true, mode: 0o700 });
+            fs.copyFileSync(sessionPath, destination);
+            fs.chmodSync(destination, 0o600);
+            writeBaseline(baseline);
+            output('resumed', 'true');
+            output('session_id', manifest.session_id);
+            output('codex_args', JSON.stringify(['resume', manifest.session_id]));
+            output('previous_artifact_id', process.env.EXPECTED_ARTIFACT_ID);
+          } catch (error) {
+            coldStart(
+              `The latest artifact failed validation (${String(error.message).slice(0, 300)}); starting a new session.`,
+            );
+          }
+          NODE
+
       - name: Record review start time
         id: review-start
         run: echo "epoch=$(date +%s)" >> "$GITHUB_OUTPUT"
@@ -299,8 +502,10 @@ jobs:
           allow-users: '*'
           model: ${{ inputs.model }}
           effort: ${{ inputs.effort }}
-          codex-home: ${{ runner.temp }}/openai-pr-review-codex-home
-          sandbox: read-only
+          codex-version: ${{ inputs.codex-version }}
+          codex-home: ${{ env.CODEX_HOME }}
+          codex-args: ${{ steps.restore_session.outputs.codex_args }}
+          permission-profile: :read-only
           safety-strategy: drop-sudo
           output-schema: |
             {
@@ -344,7 +549,6 @@ jobs:
       - name: Collect review time and token usage
         id: metrics
         env:
-          CODEX_HOME: ${{ runner.temp }}/openai-pr-review-codex-home
           REVIEW_STARTED_AT: ${{ steps.review-start.outputs.epoch }}
         run: |
           node <<'NODE'
@@ -360,6 +564,16 @@ jobs:
 
           const startedAt = Number(process.env.REVIEW_STARTED_AT);
           output('duration_seconds', Math.max(0, Math.floor(Date.now() / 1000) - startedAt));
+
+          let baseline = {};
+          try {
+            baseline = JSON.parse(fs.readFileSync(
+              process.env.SESSION_BASELINE_FILE,
+              'utf8',
+            ));
+          } catch {
+            // A missing baseline means this was a new session.
+          }
 
           let usage;
           const sessions = path.join(process.env.CODEX_HOME, 'sessions');
@@ -387,16 +601,238 @@ jobs:
           }
 
           output('usage_available', String(Boolean(usage)));
-          output('input_tokens', integer(usage?.input_tokens));
-          output('cached_input_tokens', integer(usage?.cached_input_tokens));
-          output('output_tokens', integer(usage?.output_tokens));
-          output('reasoning_output_tokens', integer(usage?.reasoning_output_tokens));
+          const delta = (name) => Math.max(
+            0,
+            integer(usage?.[name]) - integer(baseline?.[name]),
+          );
+          const inputTokens = delta('input_tokens');
+          const cachedInputTokens = delta('cached_input_tokens');
+          output('input_tokens', inputTokens);
+          output('cached_input_tokens', cachedInputTokens);
+          output(
+            'cache_write_tokens',
+            Math.max(
+              0,
+              integer(
+                usage?.cache_write_input_tokens
+                  ?? usage?.cache_write_tokens,
+              ) - integer(
+                baseline?.cache_write_input_tokens
+                  ?? baseline?.cache_write_tokens,
+              ),
+            ),
+          );
+          output(
+            'cache_hit_ratio',
+            inputTokens === 0
+              ? '0.0%'
+              : `${((cachedInputTokens / inputTokens) * 100).toFixed(1)}%`,
+          );
+          output('output_tokens', delta('output_tokens'));
+          output('reasoning_output_tokens', delta('reasoning_output_tokens'));
           output(
             'total_tokens',
-            integer(usage?.total_tokens)
-              || integer(usage?.input_tokens) + integer(usage?.output_tokens),
+            delta('total_tokens')
+              || inputTokens + delta('output_tokens'),
           );
           NODE
+
+      - name: Confirm PR head before saving session
+        id: session_head
+        continue-on-error: true
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          script: |
+            const { data: pullRequest } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: Number(process.env.PULL_REQUEST_NUMBER),
+            });
+            core.setOutput(
+              'current',
+              String(pullRequest.head.sha === process.env.PR_HEAD_SHA),
+            );
+
+      - name: Prepare PR review session snapshot
+        id: prepare_session
+        if: steps.session_head.outputs.current == 'true'
+        continue-on-error: true
+        env:
+          CODEX_VERSION: ${{ inputs.codex-version }}
+          MODEL: ${{ inputs.model }}
+          EFFORT: ${{ inputs.effort }}
+          REPOSITORY_ID: ${{ github.repository_id }}
+          REVIEW_INSTRUCTIONS: ${{ inputs.review-instructions }}
+          PREVIOUS_ARTIFACT_ID: ${{ steps.restore_session.outputs.previous_artifact_id }}
+          RESUMED_SESSION_ID: ${{ steps.restore_session.outputs.session_id }}
+        run: |
+          node <<'NODE'
+          const crypto = require('node:crypto');
+          const fs = require('node:fs');
+          const path = require('node:path');
+
+          const output = (name, value) => {
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, `${name}=${value}\n`);
+          };
+          const sessions = path.join(process.env.CODEX_HOME, 'sessions');
+          if (!fs.existsSync(sessions)) {
+            output('ready', 'false');
+            process.exit(0);
+          }
+
+          const candidates = fs.readdirSync(sessions, { recursive: true })
+            .filter((entry) => String(entry).endsWith('.jsonl'))
+            .map((entry) => path.join(sessions, String(entry)))
+            .map((file) => {
+              let sessionId = '';
+              let isSubagent = false;
+              for (const line of fs.readFileSync(file, 'utf8').split('\n', 8)) {
+                if (!line) continue;
+                try {
+                  const item = JSON.parse(line);
+                  if (item.type === 'session_meta' && item.payload?.id) {
+                    sessionId = String(item.payload.id);
+                    isSubagent = item.payload.thread_source === 'subagent'
+                      || Boolean(item.payload.parent_thread_id);
+                    break;
+                  }
+                } catch {
+                  // Continue looking for the session metadata record.
+                }
+              }
+              return {
+                file,
+                sessionId,
+                isSubagent,
+                mtimeMs: fs.statSync(file).mtimeMs,
+              };
+            })
+            .filter((candidate) => (
+              !candidate.isSubagent
+              && /^[0-9a-f-]{36}$/i.test(candidate.sessionId)
+            ))
+            .sort((left, right) => right.mtimeMs - left.mtimeMs);
+          const resumedId = process.env.RESUMED_SESSION_ID || '';
+          const selected = candidates.find(
+            (candidate) => candidate.sessionId === resumedId,
+          ) || candidates[0];
+          if (!selected) {
+            output('ready', 'false');
+            process.exit(0);
+          }
+
+          fs.rmSync(process.env.SESSION_SNAPSHOT_DIR, {
+            recursive: true,
+            force: true,
+          });
+          fs.mkdirSync(process.env.SESSION_SNAPSHOT_DIR, {
+            recursive: true,
+            mode: 0o700,
+          });
+          const snapshotSession = path.join(
+            process.env.SESSION_SNAPSHOT_DIR,
+            'session.jsonl',
+          );
+          fs.copyFileSync(selected.file, snapshotSession);
+          fs.chmodSync(snapshotSession, 0o600);
+          const sessionSha256 = crypto
+            .createHash('sha256')
+            .update(fs.readFileSync(snapshotSession))
+            .digest('hex');
+          const relativePath = path.relative(
+            process.env.CODEX_HOME,
+            selected.file,
+          ).split(path.sep).join('/');
+          if (!/^sessions\/\d{4}\/\d{2}\/\d{2}\/[^/]+\.jsonl$/.test(relativePath)) {
+            throw new Error(`Unexpected Codex session path: ${relativePath}`);
+          }
+          const manifest = {
+            schema_version: 1,
+            repository_id: String(process.env.REPOSITORY_ID),
+            repository: process.env.GITHUB_REPOSITORY,
+            pull_request: Number(process.env.PULL_REQUEST_NUMBER),
+            session_id: selected.sessionId,
+            session_relative_path: relativePath,
+            session_sha256: sessionSha256,
+            session_bytes: fs.statSync(snapshotSession).size,
+            last_reviewed_sha: process.env.PR_HEAD_SHA,
+            model: process.env.MODEL,
+            effort: process.env.EFFORT,
+            codex_version: process.env.CODEX_VERSION,
+            review_instructions_sha256: crypto
+              .createHash('sha256')
+              .update(process.env.REVIEW_INSTRUCTIONS)
+              .digest('hex'),
+            source_run_id: process.env.GITHUB_RUN_ID,
+            source_run_attempt: process.env.GITHUB_RUN_ATTEMPT,
+            previous_artifact_id: process.env.PREVIOUS_ARTIFACT_ID || null,
+            created_at: new Date().toISOString(),
+          };
+          fs.writeFileSync(
+            path.join(process.env.SESSION_SNAPSHOT_DIR, 'manifest.json'),
+            `${JSON.stringify(manifest, null, 2)}\n`,
+            { mode: 0o600 },
+          );
+          output('ready', 'true');
+          output('session_id', selected.sessionId);
+          output('session_bytes', String(manifest.session_bytes));
+          NODE
+
+      - name: Upload updated PR review session
+        id: upload_session
+        if: steps.prepare_session.outputs.ready == 'true'
+        continue-on-error: true
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ env.SESSION_ARTIFACT_NAME }}
+          path: |
+            ${{ env.SESSION_SNAPSHOT_DIR }}/manifest.json
+            ${{ env.SESSION_SNAPSHOT_DIR }}/session.jsonl
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
+
+      - name: Delete superseded PR review sessions
+        if: steps.upload_session.outputs.artifact-id != ''
+        continue-on-error: true
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          NEW_ARTIFACT_ID: ${{ steps.upload_session.outputs.artifact-id }}
+          SESSION_ARTIFACT_PREFIX: ${{ env.SESSION_ARTIFACT_PREFIX }}
+        with:
+          script: |
+            const newArtifactId = Number(process.env.NEW_ARTIFACT_ID);
+            const artifacts = await github.paginate(
+              github.rest.actions.listArtifactsForRepo,
+              {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                per_page: 100,
+              },
+            );
+            const superseded = artifacts.filter((artifact) => (
+              artifact.name.startsWith(process.env.SESSION_ARTIFACT_PREFIX)
+              && artifact.id !== newArtifactId
+            ));
+            for (const artifact of superseded) {
+              let deleted = false;
+              for (let attempt = 1; attempt <= 3 && !deleted; attempt += 1) {
+                try {
+                  await github.rest.actions.deleteArtifact({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    artifact_id: artifact.id,
+                  });
+                  deleted = true;
+                } catch (error) {
+                  if (attempt === 3) {
+                    core.warning(
+                      `Could not delete superseded session artifact ${artifact.id}: ${error.message}`,
+                    );
+                  }
+                }
+              }
+            }
 
   publish:
     needs: [resolve, review]
@@ -422,6 +858,8 @@ jobs:
           USAGE_AVAILABLE: ${{ needs.review.outputs.usage_available }}
           INPUT_TOKENS: ${{ needs.review.outputs.input_tokens }}
           CACHED_INPUT_TOKENS: ${{ needs.review.outputs.cached_input_tokens }}
+          CACHE_WRITE_TOKENS: ${{ needs.review.outputs.cache_write_tokens }}
+          CACHE_HIT_RATIO: ${{ needs.review.outputs.cache_hit_ratio }}
           OUTPUT_TOKENS: ${{ needs.review.outputs.output_tokens }}
           REASONING_OUTPUT_TOKENS: ${{ needs.review.outputs.reasoning_output_tokens }}
           TOTAL_TOKENS: ${{ needs.review.outputs.total_tokens }}
@@ -526,11 +964,17 @@ jobs:
                 ].join('\n\n');
             const usage = process.env.USAGE_AVAILABLE === 'true'
               ? [
-                  `**Review time:** ${code(duration(process.env.DURATION_SECONDS))}`,
-                  `**Tokens:** ${code(count(process.env.TOTAL_TOKENS))} total (${count(process.env.INPUT_TOKENS)} input, ${count(process.env.CACHED_INPUT_TOKENS)} cached input, ${count(process.env.OUTPUT_TOKENS)} output, ${count(process.env.REASONING_OUTPUT_TOKENS)} reasoning output)`,
+                  `**Duration:** ${code(duration(process.env.DURATION_SECONDS))}`,
+                  `**Input tokens:** ${code(count(process.env.INPUT_TOKENS))}`,
+                  `**Cached input tokens:** ${code(count(process.env.CACHED_INPUT_TOKENS))}`,
+                  `**Cache write tokens:** ${code(count(process.env.CACHE_WRITE_TOKENS))}`,
+                  `**Cache hit ratio:** ${code(process.env.CACHE_HIT_RATIO)}`,
+                  `**Output tokens:** ${code(count(process.env.OUTPUT_TOKENS))}`,
+                  `**Reasoning tokens:** ${code(count(process.env.REASONING_OUTPUT_TOKENS))}`,
+                  `**Total tokens:** ${code(count(process.env.TOTAL_TOKENS))}`,
                 ]
               : [
-                  `**Review time:** ${code(duration(process.env.DURATION_SECONDS))}`,
+                  `**Duration:** ${code(duration(process.env.DURATION_SECONDS))}`,
                   '**Tokens:** unavailable',
                 ];
             let body = [
