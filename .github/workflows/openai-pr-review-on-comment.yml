@@ -91,10 +91,51 @@ jobs:
         with:
           github-token: ${{ secrets.OPENAI_REVIEW_REACTION_TOKEN }}
           script: |
+            const command = /^@codex(?:\s+review)?$/i;
+            const commentId = Number(process.env.REQUEST_COMMENT_ID);
+            const { data: actor } = await github.rest.users.getAuthenticated();
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              per_page: 100,
+            });
+
+            // A newer request cancels the older workflow before its cleanup job can
+            // run. Replace every earlier active request here, using the same bot
+            // identity that created the original reaction.
+            for (const comment of comments) {
+              if (comment.id >= commentId || !command.test(comment.body.trim())) continue;
+              const reactions = await github.paginate(github.rest.reactions.listForIssueComment, {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: comment.id,
+                per_page: 100,
+              });
+              for (const reaction of reactions) {
+                if (reaction.content !== 'eyes' || reaction.user?.login !== actor.login) continue;
+                await github.request(
+                  'DELETE /repos/{owner}/{repo}/issues/comments/{comment_id}/reactions/{reaction_id}',
+                  {
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    comment_id: comment.id,
+                    reaction_id: reaction.id,
+                  },
+                );
+                await github.rest.reactions.createForIssueComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  comment_id: comment.id,
+                  content: 'confused',
+                });
+              }
+            }
+
             await github.rest.reactions.createForIssueComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              comment_id: Number(process.env.REQUEST_COMMENT_ID),
+              comment_id: commentId,
               content: 'eyes',
             });
 
