@@ -42,22 +42,39 @@ superseded snapshots only after a replacement upload succeeds.
   reason and a link to the Actions run instead of leaving only a reaction.
 - Every published review reports the Codex review time, input, cached-input,
   cache-write, output, reasoning-output, and total token counts, plus the cache
-  hit ratio. Cached-input tokens are part of input tokens, and reasoning-output
-  tokens are part of output tokens; neither is added to the total a second
-  time.
-- Each PR has one logical Codex session. A completed review uploads a validated
-  session snapshot with 30-day retention. The next review resumes the newest
-  compatible snapshot, reports only that run's token delta, and deletes older
-  snapshots only after the new upload succeeds. A missing, expired, corrupt,
-  or incompatible snapshot safely starts a new session.
+  hit ratio. The report includes the stable PR session key, content-addressed
+  generation key, reviewed commit range, deterministic diff chunk count, and
+  per-chunk/aggregation usage. Cached-input tokens are part of input tokens,
+  and reasoning-output tokens are part of output tokens; neither is added to
+  the total a second time.
+- Each PR has one logical Codex session. Its 30-day Artifact v2 snapshot stores
+  the validated Codex rollout plus a generation ledger containing the
+  last fully reviewed head, any in-progress target, the canonical file listing,
+  chunk hashes, completed chunk results, and usage. The next review resumes the
+  session and reviews only `last_completed_head..current_head` when the commit
+  chain and base still match. Force-pushes, incompatible base updates, corrupt
+  state, and policy changes safely fall back to a complete review.
+- The reviewer fetches PR Git objects without checking out or executing the PR
+  head and computes the complete diff locally, avoiding GitHub's 20,000-line
+  PR-diff API limit. Files use stable byte-order listing. Diffs too large for
+  one model turn are split deterministically at file and hunk boundaries and
+  reviewed sequentially in the same session. The final review is published
+  only after every chunk and aggregation turn completes.
+- Failed chunk reviews checkpoint completed work in the replacement Artifact,
+  but do not advance `last_completed_head`. A retry resumes the first unfinished
+  chunk. Older snapshots are deleted only after the replacement upload
+  succeeds. A missing, expired, corrupt, or incompatible snapshot safely starts
+  a new session.
 - Fork PRs run through the caller repository's trusted default-branch
   `pull_request_target` workflow and use the caller's explicitly forwarded
   secret. Secrets from the contributor's fork are not imported or used.
 - Opening an eligible PR intentionally permits an external contributor to
   consume one review request. Use a dedicated API project with appropriate
   usage limits and restrict the organization secret to selected repositories.
-- Diffs larger than 1 MB fail before Codex runs, limiting untrusted input and
-  avoiding unbounded model usage.
+- Complete diffs larger than 1 MB fail before Codex runs by default, limiting
+  untrusted input and avoiding unbounded model usage. Callers can explicitly
+  set `max-diff-bytes` and `chunk-target-bytes` when their cost policy permits
+  larger reviews.
 - The reviewer checks out only the trusted base commit, reads the PR diff as
   untrusted data, never checks out or executes PR-head code, and publishes
   validated native inline review comments only on added lines.
