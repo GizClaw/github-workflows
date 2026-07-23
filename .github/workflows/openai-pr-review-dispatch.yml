@@ -1,62 +1,33 @@
 name: OpenAI PR review
 
 on:
-  workflow_run:
-    workflows: [OpenAI PR review request]
-    types: [completed]
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  issue_comment:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      pull_request_number:
+        description: Open internal pull request to review.
+        required: true
+        type: string
 
 permissions:
   contents: read
   pull-requests: write
 
+concurrency:
+  group: openai-pr-review-${{ github.event.pull_request.number || github.event.issue.number || inputs.pull_request_number }}
+  cancel-in-progress: true
+
 jobs:
-  pull-request:
-    if: >-
-      github.event.workflow_run.event == 'pull_request' &&
-      github.event.workflow_run.conclusion == 'success'
-    runs-on: ubuntu-latest
-    outputs:
-      eligible: ${{ steps.pr.outputs.eligible }}
-      number: ${{ steps.pr.outputs.number }}
-      base_sha: ${{ steps.pr.outputs.base_sha }}
-      head_sha: ${{ steps.pr.outputs.head_sha }}
-    steps:
-      - name: Resolve pull request from unprivileged signal
-        id: pr
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
-        with:
-          script: |
-            const [signaledPullRequest] = context.payload.workflow_run.pull_requests;
-            if (!signaledPullRequest) {
-              core.setOutput('eligible', 'false');
-              return;
-            }
-
-            const { data: pullRequest } = await github.rest.pulls.get({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: signaledPullRequest.number,
-            });
-            const eligible = pullRequest.state === 'open' &&
-              !pullRequest.draft &&
-              pullRequest.head.repo?.fork === false;
-
-            core.setOutput('eligible', String(eligible));
-            core.setOutput('number', String(pullRequest.number));
-            core.setOutput('base_sha', pullRequest.base.sha);
-            core.setOutput('head_sha', pullRequest.head.sha);
-
   review:
-    needs: pull-request
-    if: needs.pull-request.outputs.eligible == 'true'
     uses: ./.github/workflows/codex-openai-review.yml
     with:
       model: gpt-5.6-terra
       effort: medium
       review-instructions: >-
         Review only the pull-request diff and report actionable findings.
-      pull_request_number: ${{ needs.pull-request.outputs.number }}
-      base_sha: ${{ needs.pull-request.outputs.base_sha }}
-      head_sha: ${{ needs.pull-request.outputs.head_sha }}
+      pull_request_number: ${{ inputs.pull_request_number }}
     secrets:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}

@@ -19,19 +19,17 @@ on:
         default: Review only the pull request diff. Report actionable correctness, security, regression, and test-coverage findings.
         type: string
       pull_request_number:
-        description: Pull request number to review and annotate.
-        required: true
+        description: Optional pull request number for a workflow_dispatch caller.
+        required: false
+        default: ''
         type: string
       base_sha:
-        description: Trusted pull request base commit SHA.
-        required: true
+        description: Reserved for callers that already resolved a pull request.
+        required: false
+        default: ''
         type: string
       head_sha:
-        description: Pull request head commit SHA.
-        required: true
-        type: string
-      request_comment_id:
-        description: Optional PR timeline comment ID that triggered this review.
+        description: Reserved for callers that already resolved a pull request.
         required: false
         default: ''
         type: string
@@ -45,7 +43,53 @@ on:
         value: ${{ jobs.review.outputs.review }}
 
 jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      eligible: ${{ steps.pr.outputs.eligible }}
+      number: ${{ steps.pr.outputs.number }}
+      base_sha: ${{ steps.pr.outputs.base_sha }}
+      head_sha: ${{ steps.pr.outputs.head_sha }}
+      request_comment_id: ${{ steps.pr.outputs.request_comment_id }}
+    steps:
+      - id: pr
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          REQUESTED_PULL_NUMBER: ${{ inputs.pull_request_number }}
+        with:
+          script: |
+            const event = context.eventName;
+            let number;
+            let requestCommentId = '';
+            if (event === 'pull_request') {
+              number = context.payload.pull_request.number;
+            } else if (event === 'issue_comment') {
+              if (!context.payload.issue.pull_request) return core.setOutput('eligible', 'false');
+              const command = context.payload.comment.body.trim();
+              if (!/^@codex(?:\s+review(?:\s+[\s\S]+)?)?\s*$/i.test(command)) return core.setOutput('eligible', 'false');
+              const { data: permission } = await github.rest.repos.getCollaboratorPermissionLevel({ owner: context.repo.owner, repo: context.repo.repo, username: context.payload.comment.user.login });
+              if (!['admin', 'maintain', 'write'].includes(permission.permission)) return core.setOutput('eligible', 'false');
+              number = context.payload.issue.number;
+              requestCommentId = String(context.payload.comment.id);
+            } else if (event === 'workflow_dispatch') {
+              number = Number(process.env.REQUESTED_PULL_NUMBER);
+            } else {
+              return core.setOutput('eligible', 'false');
+            }
+            const { data: pr } = await github.rest.pulls.get({ owner: context.repo.owner, repo: context.repo.repo, pull_number: Number(number) });
+            const eligible = pr.state === 'open' && !pr.draft && pr.head.repo?.fork === false;
+            core.setOutput('eligible', String(eligible));
+            core.setOutput('number', String(pr.number));
+            core.setOutput('base_sha', pr.base.sha);
+            core.setOutput('head_sha', pr.head.sha);
+            core.setOutput('request_comment_id', requestCommentId);
+
   review:
+    needs: resolve
+    if: needs.resolve.outputs.eligible == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -54,22 +98,22 @@ jobs:
     outputs:
       review: ${{ steps.codex.outputs.final-message }}
     env:
-      PULL_REQUEST_NUMBER: ${{ inputs.pull_request_number }}
-      PR_BASE_SHA: ${{ inputs.base_sha }}
-      PR_HEAD_SHA: ${{ inputs.head_sha }}
-      REQUEST_COMMENT_ID: ${{ inputs.request_comment_id }}
+      PULL_REQUEST_NUMBER: ${{ needs.resolve.outputs.number }}
+      PR_BASE_SHA: ${{ needs.resolve.outputs.base_sha }}
+      PR_HEAD_SHA: ${{ needs.resolve.outputs.head_sha }}
+      REQUEST_COMMENT_ID: ${{ needs.resolve.outputs.request_comment_id }}
     steps:
       - name: Check out trusted pull-request base commit
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
-          ref: ${{ inputs.base_sha }}
+          ref: ${{ needs.resolve.outputs.base_sha }}
           fetch-depth: 0
           persist-credentials: false
 
       - name: Fetch pull-request diff without checking out its code
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         env:
-          PR_DIFF_FILE: ${{ runner.temp }}/openai-pr-${{ inputs.pull_request_number }}.diff
+          PR_DIFF_FILE: ${{ runner.temp }}/openai-pr-${{ needs.resolve.outputs.number }}.diff
         with:
           script: |
             const fs = require('node:fs');
@@ -85,7 +129,7 @@ jobs:
       - name: Collect untrusted pull-request discussion context
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         env:
-          PR_CONTEXT_FILE: ${{ runner.temp }}/openai-pr-${{ inputs.pull_request_number }}-context.json
+          PR_CONTEXT_FILE: ${{ runner.temp }}/openai-pr-${{ needs.resolve.outputs.number }}-context.json
         with:
           script: |
             const fs = require('node:fs');
@@ -111,7 +155,7 @@ jobs:
 
       - name: Mark manual request in progress
         id: request_reaction
-        if: inputs.request_comment_id != ''
+        if: needs.resolve.outputs.request_comment_id != ''
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
           script: |
@@ -180,7 +224,7 @@ jobs:
             Return only the JSON object required by the output schema. Include only actionable findings that are introduced by this pull request. Every finding must identify an added line in the diff, using its exact repository-relative path and new-file line number; otherwise omit it. Use P0 for release-blocking defects, P1 for urgent defects, P2 for normal defects, and P3 for lower-priority defects. If there are no actionable findings, return an empty findings array and a concise summary.
 
       - name: Record manual request result
-        if: always() && inputs.request_comment_id != ''
+        if: always() && needs.resolve.outputs.request_comment_id != ''
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         env:
           REQUEST_REACTION_ID: ${{ steps.request_reaction.outputs.reaction_id }}
@@ -213,7 +257,7 @@ jobs:
             });
 
   publish:
-    needs: review
+    needs: [resolve, review]
     if: needs.review.result == 'success'
     runs-on: ubuntu-latest
     permissions:
@@ -226,8 +270,8 @@ jobs:
           REVIEW: ${{ needs.review.outputs.review }}
           MODEL: ${{ inputs.model }}
           EFFORT: ${{ inputs.effort }}
-          PULL_REQUEST_NUMBER: ${{ inputs.pull_request_number }}
-          PR_HEAD_SHA: ${{ inputs.head_sha }}
+          PULL_REQUEST_NUMBER: ${{ needs.resolve.outputs.number }}
+          PR_HEAD_SHA: ${{ needs.resolve.outputs.head_sha }}
         with:
           script: |
             const maxCommentLength = 60_000;
