@@ -21,8 +21,8 @@ repository's review policy.
 
 ## Behavior
 
-- Reviews open, non-draft, non-fork PRs when they open, update, reopen, or
-  become ready for review.
+- Reviews an open, non-draft, non-fork PR when it is first created. Later
+  pushes do not start another review.
 - A collaborator with `write`, `maintain`, or `admin` permission can request a
   fresh review using `@codex` or `@codex review <focus>`.
 - **Run workflow** accepts a pull-request number as a manual fallback.
