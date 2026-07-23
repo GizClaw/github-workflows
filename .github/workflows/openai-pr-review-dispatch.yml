@@ -52,6 +52,7 @@ jobs:
     uses: ./.github/workflows/codex-openai-review.yml
     with:
       model: gpt-5.6-terra
+      effort: medium
       review-instructions: >-
         Review only the pull-request diff and report actionable findings.
       pull_request_number: ${{ needs.pull-request.outputs.number }}

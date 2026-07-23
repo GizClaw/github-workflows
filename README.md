@@ -99,6 +99,7 @@ jobs:
     uses: GizClaw/github-workflows/.github/workflows/codex-openai-review.yml@v1
     with:
       model: gpt-5.6-terra
+      effort: medium
       review-instructions: >-
         Review only the pull-request diff and report actionable findings.
       pull_request_number: ${{ needs.resolve-pr.outputs.number }}
@@ -117,9 +118,10 @@ uses: GizClaw/github-workflows/.github/workflows/codex-openai-review.yml@v1
 ```
 
 The caller must pass `OPENAI_API_KEY` by name. Do not use `secrets: inherit`.
-The reusable workflow defaults `model` to `gpt-5.6-terra`; callers may select
-another supported OpenAI model deliberately. Keep the selected model in the
-wrapper so that a model change is reviewed as configuration.
+The reusable workflow defaults `model` to `gpt-5.6-terra` and reasoning
+`effort` to `medium`; callers may deliberately select another supported model
+or effort level. Keep both settings in the wrapper so they are reviewed as
+configuration.
 
 This repository includes all three caller workflows as its internal caller and
 smoke-test path. Both privileged wrappers are loaded from `main`, so a pull
@@ -149,6 +151,7 @@ data; it never checks out or executes the pull-request head or merge ref.
 | Input | Default | Purpose |
 | --- | --- | --- |
 | `model` | `gpt-5.6-terra` | OpenAI model supplied to Codex for the review. |
+| `effort` | `medium` | Codex reasoning effort; choose a value supported by the selected model. |
 | `review-instructions` | Diff-only actionable-review profile | Additional caller-owned review guidance. |
 | `pull_request_number` | — | Open pull request to annotate. |
 | `base_sha` | — | Trusted base commit checked out for review context. |

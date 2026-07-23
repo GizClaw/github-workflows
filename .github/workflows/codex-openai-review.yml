@@ -8,6 +8,11 @@ on:
         required: false
         default: gpt-5.6-terra
         type: string
+      effort:
+        description: Reasoning effort supplied to Codex for this review.
+        required: false
+        default: medium
+        type: string
       review-instructions:
         description: Additional caller-owned instructions for the review.
         required: false
@@ -85,6 +90,7 @@ jobs:
         with:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
           model: ${{ inputs.model }}
+          effort: ${{ inputs.effort }}
           sandbox: read-only
           safety-strategy: drop-sudo
           output-schema: |
@@ -137,6 +143,7 @@ jobs:
         env:
           REVIEW: ${{ needs.review.outputs.review }}
           MODEL: ${{ inputs.model }}
+          EFFORT: ${{ inputs.effort }}
           PULL_REQUEST_NUMBER: ${{ inputs.pull_request_number }}
           PR_HEAD_SHA: ${{ inputs.head_sha }}
         with:
@@ -229,6 +236,7 @@ jobs:
               '## 🤖 OpenAI PR review',
               `**Reviewed commit:** ${code(process.env.PR_HEAD_SHA.slice(0, 10))}`,
               `**Model:** ${code(process.env.MODEL)}`,
+              `**Reasoning effort:** ${code(process.env.EFFORT)}`,
               String(review.summary).slice(0, 12_000),
               inlineFindings.length === 0 && summaryFindings.length === 0
                 ? 'No actionable findings.'
