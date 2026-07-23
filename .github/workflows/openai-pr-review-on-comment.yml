@@ -1,0 +1,187 @@
+name: OpenAI PR review on request
+
+on:
+  issue_comment:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      pull_request_number:
+        description: Open internal pull request to review.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: openai-pr-review-${{ github.event.issue.number || inputs.pull_request_number }}
+  cancel-in-progress: true
+
+jobs:
+  pull-request:
+    if: >-
+      (github.event_name == 'issue_comment' && github.event.issue.pull_request) ||
+      github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    outputs:
+      eligible: ${{ steps.pr.outputs.eligible }}
+      number: ${{ steps.pr.outputs.number }}
+      base_sha: ${{ steps.pr.outputs.base_sha }}
+      head_sha: ${{ steps.pr.outputs.head_sha }}
+      request_comment_id: ${{ steps.pr.outputs.request_comment_id }}
+    steps:
+      - name: Authorize explicit review request
+        id: pr
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          REQUESTED_PULL_NUMBER: ${{ inputs.pull_request_number }}
+        with:
+          script: |
+            const isManualDispatch = context.eventName === 'workflow_dispatch';
+            if (!isManualDispatch) {
+              const command = context.payload.comment.body.trim();
+              if (!/^@codex(?:\s+review)?$/i.test(command)) {
+                core.setOutput('eligible', 'false');
+                return;
+              }
+              const { data: permission } = await github.rest.repos.getCollaboratorPermissionLevel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                username: context.payload.comment.user.login,
+              });
+              if (!['admin', 'maintain', 'write'].includes(permission.permission)) {
+                core.setOutput('eligible', 'false');
+                return;
+              }
+
+              const comments = await github.paginate(github.rest.issues.listComments, {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.payload.issue.number,
+                per_page: 100,
+              });
+              for (const previous of comments) {
+                if (previous.id === context.payload.comment.id ||
+                    !/^@codex(?:\s+review)?$/i.test(previous.body.trim())) continue;
+                const reactions = await github.paginate(github.rest.reactions.listForIssueComment, {
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  comment_id: previous.id,
+                  per_page: 100,
+                });
+                for (const reaction of reactions) {
+                  if (reaction.content === 'eyes' && reaction.user?.login === 'github-actions[bot]') {
+                    await github.request(
+                      'DELETE /repos/{owner}/{repo}/issues/comments/{comment_id}/reactions/{reaction_id}',
+                      {
+                        owner: context.repo.owner,
+                        repo: context.repo.repo,
+                        comment_id: previous.id,
+                        reaction_id: reaction.id,
+                      },
+                    );
+                    await github.rest.reactions.createForIssueComment({
+                      owner: context.repo.owner,
+                      repo: context.repo.repo,
+                      comment_id: previous.id,
+                      content: 'confused',
+                    });
+                  }
+                }
+              }
+              await github.rest.reactions.createForIssueComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: context.payload.comment.id,
+                content: 'eyes',
+              });
+              core.setOutput('request_comment_id', String(context.payload.comment.id));
+            }
+
+            const pullNumber = Number(
+              isManualDispatch
+                ? process.env.REQUESTED_PULL_NUMBER
+                : context.payload.issue.number,
+            );
+            if (!Number.isSafeInteger(pullNumber) || pullNumber < 1) {
+              core.setFailed('A valid pull request number is required.');
+              return;
+            }
+            const { data: pullRequest } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: pullNumber,
+            });
+            const eligible = pullRequest.state === 'open' &&
+              !pullRequest.draft &&
+              pullRequest.head.repo?.fork === false;
+            core.setOutput('eligible', String(eligible));
+            core.setOutput('number', String(pullRequest.number));
+            core.setOutput('base_sha', pullRequest.base.sha);
+            core.setOutput('head_sha', pullRequest.head.sha);
+
+  review:
+    needs: pull-request
+    if: needs.pull-request.outputs.eligible == 'true'
+    uses: ./.github/workflows/codex-openai-review.yml
+    with:
+      model: gpt-5.6-terra
+      effort: medium
+      review-instructions: >-
+        Review only the pull-request diff and report actionable findings.
+      pull_request_number: ${{ needs.pull-request.outputs.number }}
+      base_sha: ${{ needs.pull-request.outputs.base_sha }}
+      head_sha: ${{ needs.pull-request.outputs.head_sha }}
+    secrets:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+
+  complete-request:
+    needs: [pull-request, review]
+    if: >-
+      always() &&
+      needs.pull-request.outputs.eligible == 'true' &&
+      needs.pull-request.outputs.request_comment_id != ''
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Update request reaction
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          REQUEST_COMMENT_ID: ${{ needs.pull-request.outputs.request_comment_id }}
+          REVIEW_RESULT: ${{ needs.review.result }}
+        with:
+          script: |
+            const commentId = Number(process.env.REQUEST_COMMENT_ID);
+            const reactions = await github.paginate(github.rest.reactions.listForIssueComment, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: commentId,
+              per_page: 100,
+            });
+            for (const reaction of reactions) {
+              if (reaction.content === 'eyes' && reaction.user?.login === 'github-actions[bot]') {
+                await github.request(
+                  'DELETE /repos/{owner}/{repo}/issues/comments/{comment_id}/reactions/{reaction_id}',
+                  {
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    comment_id: commentId,
+                    reaction_id: reaction.id,
+                  },
+                );
+              }
+            }
+            const resultReaction = process.env.REVIEW_RESULT === 'success'
+              ? 'rocket'
+              : process.env.REVIEW_RESULT === 'cancelled'
+                ? 'confused'
+                : '-1';
+            await github.rest.reactions.createForIssueComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: commentId,
+              content: resultReaction,
+            });
