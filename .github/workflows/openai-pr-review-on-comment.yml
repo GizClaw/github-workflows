@@ -25,8 +25,6 @@ jobs:
       (github.event_name == 'issue_comment' && github.event.issue.pull_request) ||
       github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    env:
-      REACTION_TOKEN: ${{ secrets.OPENAI_REVIEW_REACTION_TOKEN }}
     outputs:
       eligible: ${{ steps.pr.outputs.eligible }}
       number: ${{ steps.pr.outputs.number }}
@@ -84,12 +82,11 @@ jobs:
             core.setOutput('head_sha', pullRequest.head.sha);
 
       - name: Mark manual request in progress
-        if: steps.pr.outputs.request_comment_id != '' && env.REACTION_TOKEN != ''
+        if: steps.pr.outputs.request_comment_id != ''
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         env:
           REQUEST_COMMENT_ID: ${{ steps.pr.outputs.request_comment_id }}
         with:
-          github-token: ${{ secrets.OPENAI_REVIEW_REACTION_TOKEN }}
           script: |
             const command = /^@codex(?:\s+review)?$/i;
             const commentId = Number(process.env.REQUEST_COMMENT_ID);
@@ -161,15 +158,12 @@ jobs:
     permissions:
       issues: write
     env:
-      REACTION_TOKEN: ${{ secrets.OPENAI_REVIEW_REACTION_TOKEN }}
       REQUEST_COMMENT_ID: ${{ needs.pull-request.outputs.request_comment_id }}
       REVIEW_RESULT: ${{ needs.review.result }}
     steps:
       - name: Replace manual request reaction
-        if: env.REACTION_TOKEN != ''
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
-          github-token: ${{ secrets.OPENAI_REVIEW_REACTION_TOKEN }}
           script: |
             const commentId = Number(process.env.REQUEST_COMMENT_ID);
             const { data: actor } = await github.rest.users.getAuthenticated();

@@ -28,16 +28,15 @@ service:
   fallback;
 - fork PRs and drafts are skipped.
 
-When callers configure the optional `OPENAI_REVIEW_REACTION_TOKEN` as a
-dedicated GitHub App or bot token, every accepted manual-request comment acts
-as its own status record without adding timeline noise: `👀` means
+Every accepted manual-request comment acts as its own status record without
+adding timeline noise: `👀` means
 accepted/running, `🚀` means the review completed, `👎` means it failed, and
 `😕` means a newer request for the same PR superseded it. On accepting a new
 request, the workflow replaces `👀` on every earlier active request comment
 with `😕`; this covers concurrency cancellation, where the cancelled workflow
-cannot run its own cleanup job. The token must be the same identity for
-creation and replacement; GitHub's per-job `GITHUB_TOKEN` cannot provide that
-lifecycle. Only the newest manual request runs at a time.
+cannot run its own cleanup job. The repository-scoped `GITHUB_TOKEN` performs
+these reactions with the workflow's `issues: write` permission. Only the
+newest manual request runs at a time.
 
 The PR event is deliberately an unprivileged signal with no secret:
 
@@ -129,11 +128,6 @@ uses: GizClaw/github-workflows/.github/workflows/codex-openai-review.yml@v1
 ```
 
 The caller must pass `OPENAI_API_KEY` by name. Do not use `secrets: inherit`.
-To enable request-state reactions, also provision the optional
-`OPENAI_REVIEW_REACTION_TOKEN` with only the repository permissions needed to
-read and write issue reactions. Use a dedicated GitHub App or bot identity:
-the token must be stable across jobs so it can remove the `👀` reaction it
-created earlier.
 The reusable workflow defaults `model` to `gpt-5.6-terra` and reasoning
 `effort` to `medium`; callers may deliberately select another supported model
 or effort level. Keep both settings in the wrapper so they are reviewed as
