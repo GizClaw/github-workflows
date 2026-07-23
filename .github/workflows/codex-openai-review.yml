@@ -560,6 +560,7 @@ jobs:
 
       - name: Bootstrap Codex and its protected API proxy
         id: codex_bootstrap
+        if: steps.prepare_diff.outputs.reused != 'true'
         uses: openai/codex-action@52fe01ec70a42f454c9d2ebd47598f9fd6893d56 # v1
         with:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
@@ -576,6 +577,7 @@ jobs:
           REPOSITORY_DIR: ${{ github.workspace }}
           REVIEW_OUTPUT_SCHEMA: ${{ env.REVIEWER_SOURCE_DIR }}/.github/scripts/pr-review/review-output-schema.json
           GENERATION_KEY: ${{ steps.prepare_diff.outputs.generation_key }}
+          GENERATION_REUSED: ${{ steps.prepare_diff.outputs.reused }}
           RESUMED_SESSION_ID: ${{ steps.restore_session.outputs.session_id }}
           MODEL: ${{ inputs.model }}
           EFFORT: ${{ inputs.effort }}

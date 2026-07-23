@@ -27,6 +27,7 @@ const generationKey = required("GENERATION_KEY");
 const model = required("MODEL");
 const effort = required("EFFORT");
 const reviewInstructions = required("REVIEW_INSTRUCTIONS");
+const generationReused = process.env.GENERATION_REUSED === "true";
 let sessionId = process.env.RESUMED_SESSION_ID ?? "";
 const ledgerPath = path.join(stateDir, "review-ledger.json");
 const generationDir = path.join(stateDir, "generations", generationKey);
@@ -215,10 +216,11 @@ try {
     generationDir,
     generation.aggregate.result_relative_path,
   ));
-  const turns = [
+  const generationTurns = [
     ...generation.chunks.map((chunk) => chunk.metrics).filter(Boolean),
     generation.aggregate.metrics,
   ].filter(Boolean);
+  const turns = generationReused ? [] : generationTurns;
   const totals = turns.reduce((total, metrics) => ({
     duration_seconds: total.duration_seconds + metrics.duration_seconds,
     input_tokens: total.input_tokens + metrics.input_tokens,
@@ -238,19 +240,24 @@ try {
     total_tokens: 0,
   });
   totals.cache_hit_ratio = totals.input_tokens === 0
-    ? 0
+    ? null
     : totals.cached_input_tokens / totals.input_tokens;
 
   appendOutput("review", JSON.stringify(review));
   appendOutput("session_id", sessionId);
   appendOutput("generation_key", generation.key);
-  appendOutput("usage_available", String(turns.length > 0));
+  appendOutput("usage_available", "true");
   appendOutput("usage_json", JSON.stringify({ turns, totals }));
   appendOutput("duration_seconds", totals.duration_seconds);
   appendOutput("input_tokens", totals.input_tokens);
   appendOutput("cached_input_tokens", totals.cached_input_tokens);
   appendOutput("cache_write_tokens", totals.cache_write_tokens);
-  appendOutput("cache_hit_ratio", `${(totals.cache_hit_ratio * 100).toFixed(1)}%`);
+  appendOutput(
+    "cache_hit_ratio",
+    totals.cache_hit_ratio === null
+      ? "N/A"
+      : `${(totals.cache_hit_ratio * 100).toFixed(1)}%`,
+  );
   appendOutput("output_tokens", totals.output_tokens);
   appendOutput("reasoning_output_tokens", totals.reasoning_output_tokens);
   appendOutput("total_tokens", totals.total_tokens);

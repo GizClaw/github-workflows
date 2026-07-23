@@ -225,6 +225,42 @@ fs.writeFileSync(outputFile, JSON.stringify({
   ));
   assert.equal(completedLedger.generations.at(-1).status, "completed");
   assert.equal(completedLedger.generations.at(-1).aggregate.metrics.input_tokens, 100);
+
+  const reusedOutput = path.join(temporary, "reused-output");
+  const reusedResult = spawnSync(process.execPath, [
+    path.join(path.dirname(new URL(import.meta.url).pathname), "run.mjs"),
+  ], {
+    cwd: repo,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      PATH: `${fakeBin}${path.delimiter}${process.env.PATH}`,
+      GITHUB_OUTPUT: reusedOutput,
+      PR_REVIEW_STATE_DIR: state,
+      CODEX_HOME: codexHome,
+      REPOSITORY_DIR: repo,
+      PR_CONTEXT_FILE: contextFile,
+      REVIEW_OUTPUT_SCHEMA: path.join(
+        path.dirname(new URL(import.meta.url).pathname),
+        "review-output-schema.json",
+      ),
+      GENERATION_KEY: latestGeneration.key,
+      GENERATION_REUSED: "true",
+      MODEL: "gpt-test",
+      EFFORT: "medium",
+      REVIEW_INSTRUCTIONS: "Review the diff.",
+    },
+  });
+  assert.equal(reusedResult.status, 0, reusedResult.stderr);
+  const reusedOutputs = fs.readFileSync(reusedOutput, "utf8");
+  assert.match(reusedOutputs, /^duration_seconds=0$/m);
+  assert.match(reusedOutputs, /^input_tokens=0$/m);
+  assert.match(reusedOutputs, /^cached_input_tokens=0$/m);
+  assert.match(reusedOutputs, /^cache_write_tokens=0$/m);
+  assert.match(reusedOutputs, /^cache_hit_ratio=N\/A$/m);
+  assert.match(reusedOutputs, /^output_tokens=0$/m);
+  assert.match(reusedOutputs, /^reasoning_output_tokens=0$/m);
+  assert.match(reusedOutputs, /^total_tokens=0$/m);
 } finally {
   fs.rmSync(temporary, { recursive: true, force: true });
 }
