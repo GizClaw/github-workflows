@@ -146,11 +146,13 @@ jobs:
           REQUEST_COMMENT_ID: ${{ steps.pr.outputs.request_comment_id }}
           REQUEST_REACTION_ID: ${{ steps.request_reaction.outputs.reaction_id }}
           REVIEW_OUTCOME: ${{ steps.codex.outcome }}
+          RUN_CANCELLED: ${{ cancelled() }}
         with:
           script: |
             const commentId = Number(process.env.REQUEST_COMMENT_ID); const reactionId = Number(process.env.REQUEST_REACTION_ID);
             if (reactionId) await github.request('DELETE /repos/{owner}/{repo}/issues/comments/{comment_id}/reactions/{reaction_id}', { owner: context.repo.owner, repo: context.repo.repo, comment_id: commentId, reaction_id: reactionId });
-            await github.rest.reactions.createForIssueComment({ owner: context.repo.owner, repo: context.repo.repo, comment_id: commentId, content: process.env.REVIEW_OUTCOME === 'success' ? 'rocket' : process.env.REVIEW_OUTCOME === 'cancelled' ? 'confused' : '-1' });
+            const cancelled = process.env.RUN_CANCELLED === 'true' || process.env.REVIEW_OUTCOME === 'cancelled';
+            await github.rest.reactions.createForIssueComment({ owner: context.repo.owner, repo: context.repo.repo, comment_id: commentId, content: cancelled ? 'confused' : process.env.REVIEW_OUTCOME === 'success' ? 'rocket' : '-1' });
 
   review:
     needs: pull-request
