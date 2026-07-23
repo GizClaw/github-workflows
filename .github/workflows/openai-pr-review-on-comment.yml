@@ -84,6 +84,10 @@ jobs:
   review:
     needs: pull-request
     if: needs.pull-request.outputs.eligible == 'true'
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: read
     uses: ./.github/workflows/codex-openai-review.yml
     with:
       model: gpt-5.6-terra
