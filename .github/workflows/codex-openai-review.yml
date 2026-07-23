@@ -93,19 +93,20 @@ jobs:
               "additionalProperties": false,
               "required": ["summary", "findings"],
               "properties": {
-                "summary": { "type": "string" },
+                "summary": { "type": "string", "maxLength": 12000 },
                 "findings": {
                   "type": "array",
+                  "maxItems": 25,
                   "items": {
                     "type": "object",
                     "additionalProperties": false,
                     "required": ["title", "priority", "path", "line", "body"],
                     "properties": {
-                      "title": { "type": "string" },
+                      "title": { "type": "string", "maxLength": 240 },
                       "priority": { "type": "string", "enum": ["P0", "P1", "P2", "P3"] },
                       "path": { "type": "string" },
                       "line": { "type": "integer", "minimum": 1 },
-                      "body": { "type": "string" }
+                      "body": { "type": "string", "maxLength": 12000 }
                     }
                   }
                 }
@@ -121,7 +122,7 @@ jobs:
             Review profile supplied by the trusted caller:
             ${{ inputs.review-instructions }}
 
-            Return only the JSON object required by the output schema. Include only actionable findings that are introduced by this pull request. Use P0 for release-blocking defects, P1 for urgent defects, P2 for normal defects, and P3 for lower-priority defects. If there are no actionable findings, return an empty findings array and a concise summary.
+            Return only the JSON object required by the output schema. Include only actionable findings that are introduced by this pull request. Every finding must identify an added line in the diff, using its exact repository-relative path and new-file line number; otherwise omit it. Use P0 for release-blocking defects, P1 for urgent defects, P2 for normal defects, and P3 for lower-priority defects. If there are no actionable findings, return an empty findings array and a concise summary.
 
   publish:
     needs: review
@@ -131,16 +132,17 @@ jobs:
       contents: read
       pull-requests: write
     steps:
-      - name: Publish structured review result
+      - name: Publish native pull-request review
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         env:
           REVIEW: ${{ needs.review.outputs.review }}
           MODEL: ${{ inputs.model }}
           PULL_REQUEST_NUMBER: ${{ inputs.pull_request_number }}
+          PR_HEAD_SHA: ${{ inputs.head_sha }}
         with:
           script: |
-            const marker = '<!-- gizclaw-openai-review -->';
             const maxCommentLength = 60_000;
+            const maxFindingLength = 12_000;
             const review = JSON.parse(process.env.REVIEW);
             const code = (value) => {
               const text = String(value);
@@ -150,58 +152,97 @@ jobs:
               ));
               return `${delimiter}${text}${delimiter}`;
             };
-            const fence = (value) => `\`\`\`text\n${String(value).replaceAll('```', '``\\`')}\n\`\`\``;
-
-            const findings = review.findings.length === 0
-              ? 'No actionable findings.'
-              : review.findings.map((finding, index) => [
-                  `${index + 1}. ${code(finding.priority)} ${code(finding.path)}:${finding.line} — ${code(finding.title)}`,
-                  fence(finding.body),
-                ].join('\n')).join('\n\n');
-
-            let body = [
-              marker,
-              '## OpenAI PR review',
-              `Model: ${code(process.env.MODEL)}`,
-              '### Summary',
-              fence(review.summary),
-              '### Findings',
-              findings,
-            ].join('\n\n');
-
-            if (body.length > maxCommentLength) {
-              body = [
-                marker,
-                '## OpenAI PR review',
-                `Model: ${code(process.env.MODEL)}`,
-                'The structured review result exceeded the GitHub comment limit.',
-                '### Summary',
-                fence(`${String(review.summary).slice(0, 55_000)}\n\n[Truncated]`),
-              ].join('\n\n');
-            }
-
-            const comments = await github.paginate(github.rest.issues.listComments, {
+            const pullNumber = Number(process.env.PULL_REQUEST_NUMBER);
+            const { data: pullRequest } = await github.rest.pulls.get({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              issue_number: Number(process.env.PULL_REQUEST_NUMBER),
+              pull_number: pullNumber,
+            });
+
+            if (pullRequest.head.sha !== process.env.PR_HEAD_SHA) {
+              core.setFailed('Pull-request head changed while the review was running; skipping a stale review.');
+              return;
+            }
+
+            const files = await github.paginate(github.rest.pulls.listFiles, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: pullNumber,
               per_page: 100,
             });
-            const existing = comments.find((comment) =>
-              comment.user?.login === 'github-actions[bot]' && comment.body?.includes(marker),
-            );
-
-            if (existing) {
-              await github.rest.issues.updateComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                comment_id: existing.id,
-                body,
-              });
-            } else {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: Number(process.env.PULL_REQUEST_NUMBER),
-                body,
-              });
+            const addedLinesByPath = new Map();
+            for (const file of files) {
+              if (!file.patch) continue;
+              const addedLines = new Set();
+              let newLine;
+              for (const patchLine of file.patch.split('\n')) {
+                const hunk = patchLine.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+                if (hunk) {
+                  newLine = Number(hunk[1]);
+                  continue;
+                }
+                if (newLine === undefined || patchLine.startsWith('\\ No newline')) continue;
+                if (patchLine.startsWith('+')) {
+                  if (!patchLine.startsWith('+++')) addedLines.add(newLine);
+                  newLine += 1;
+                } else if (patchLine.startsWith(' ')) {
+                  newLine += 1;
+                }
+              }
+              addedLinesByPath.set(file.filename, addedLines);
             }
+
+            const badge = {
+              P0: 'red', P1: 'orange', P2: 'yellow', P3: 'blue',
+            };
+            const formatFinding = (finding) => [
+              `**<sub><sub>![${finding.priority} Badge](https://img.shields.io/badge/${finding.priority}-${badge[finding.priority]}?style=flat)</sub></sub> ${String(finding.title).slice(0, 240)}**`,
+              String(finding.body).slice(0, maxFindingLength),
+              'Useful? React with 👍 / 👎.',
+            ].join('\n\n');
+            const inlineFindings = [];
+            const summaryFindings = [];
+            for (const finding of review.findings) {
+              const lines = addedLinesByPath.get(finding.path);
+              if (lines?.has(finding.line)) {
+                inlineFindings.push({
+                  path: finding.path,
+                  line: finding.line,
+                  side: 'RIGHT',
+                  body: formatFinding(finding),
+                });
+              } else {
+                summaryFindings.push(finding);
+              }
+            }
+
+            const fallback = summaryFindings.length === 0
+              ? ''
+              : [
+                  '### Findings without a safe inline location',
+                  ...summaryFindings.map((finding) => [
+                    `- ${code(finding.priority)} ${code(finding.path)}:${finding.line} — ${String(finding.title).slice(0, 240)}`,
+                    `  ${String(finding.body).slice(0, 2_000).replaceAll('\n', '\n  ')}`,
+                  ].join('\n')),
+                ].join('\n\n');
+            let body = [
+              '## 🤖 OpenAI PR review',
+              `**Reviewed commit:** ${code(process.env.PR_HEAD_SHA.slice(0, 10))}`,
+              `**Model:** ${code(process.env.MODEL)}`,
+              String(review.summary).slice(0, 12_000),
+              inlineFindings.length === 0 && summaryFindings.length === 0
+                ? 'No actionable findings.'
+                : `${inlineFindings.length} inline finding${inlineFindings.length === 1 ? '' : 's'} published.`,
+              fallback,
+            ].filter(Boolean).join('\n\n');
+            if (body.length > maxCommentLength) body = `${body.slice(0, maxCommentLength - 16)}\n\n[Truncated]`;
+
+            await github.rest.pulls.createReview({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: pullNumber,
+              commit_id: process.env.PR_HEAD_SHA,
+              event: 'COMMENT',
+              body,
+              comments: inlineFindings,
+            });
