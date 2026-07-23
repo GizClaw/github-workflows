@@ -31,6 +31,7 @@ jobs:
       base_sha: ${{ steps.pr.outputs.base_sha }}
       head_sha: ${{ steps.pr.outputs.head_sha }}
       request_comment_id: ${{ steps.pr.outputs.request_comment_id }}
+      request_reaction_id: ${{ steps.reaction.outputs.reaction_id }}
     steps:
       - name: Authorize explicit review request
         id: pr
@@ -82,59 +83,21 @@ jobs:
             core.setOutput('head_sha', pullRequest.head.sha);
 
       - name: Mark manual request in progress
+        id: reaction
         if: steps.pr.outputs.request_comment_id != ''
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         env:
           REQUEST_COMMENT_ID: ${{ steps.pr.outputs.request_comment_id }}
         with:
           script: |
-            const command = /^@codex(?:\s+review)?$/i;
             const commentId = Number(process.env.REQUEST_COMMENT_ID);
-            const { data: actor } = await github.rest.users.getAuthenticated();
-            const comments = await github.paginate(github.rest.issues.listComments, {
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              per_page: 100,
-            });
-
-            // A newer request cancels the older workflow before its cleanup job can
-            // run. Replace every earlier active request here, using the same bot
-            // identity that created the original reaction.
-            for (const comment of comments) {
-              if (comment.id >= commentId || !command.test(comment.body.trim())) continue;
-              const reactions = await github.paginate(github.rest.reactions.listForIssueComment, {
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                comment_id: comment.id,
-                per_page: 100,
-              });
-              for (const reaction of reactions) {
-                if (reaction.content !== 'eyes' || reaction.user?.login !== actor.login) continue;
-                await github.request(
-                  'DELETE /repos/{owner}/{repo}/issues/comments/{comment_id}/reactions/{reaction_id}',
-                  {
-                    owner: context.repo.owner,
-                    repo: context.repo.repo,
-                    comment_id: comment.id,
-                    reaction_id: reaction.id,
-                  },
-                );
-                await github.rest.reactions.createForIssueComment({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  comment_id: comment.id,
-                  content: 'confused',
-                });
-              }
-            }
-
-            await github.rest.reactions.createForIssueComment({
+            const { data: reaction } = await github.rest.reactions.createForIssueComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               comment_id: commentId,
               content: 'eyes',
             });
+            core.setOutput('reaction_id', String(reaction.id));
 
   review:
     needs: pull-request
@@ -151,7 +114,7 @@ jobs:
     secrets:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
 
-  complete-request:
+  teardown-request:
     needs: [pull-request, review]
     if: always() && needs.pull-request.outputs.request_comment_id != ''
     runs-on: ubuntu-latest
@@ -159,31 +122,28 @@ jobs:
       issues: write
     env:
       REQUEST_COMMENT_ID: ${{ needs.pull-request.outputs.request_comment_id }}
+      REQUEST_REACTION_ID: ${{ needs.pull-request.outputs.request_reaction_id }}
       REVIEW_RESULT: ${{ needs.review.result }}
     steps:
-      - name: Replace manual request reaction
+      - name: Record final manual request state
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
           script: |
             const commentId = Number(process.env.REQUEST_COMMENT_ID);
-            const { data: actor } = await github.rest.users.getAuthenticated();
-            const reactions = await github.paginate(github.rest.reactions.listForIssueComment, {
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              comment_id: commentId,
-              per_page: 100,
-            });
-            for (const reaction of reactions) {
-              if (reaction.content === 'eyes' && reaction.user?.login === actor.login) {
+            const reactionId = Number(process.env.REQUEST_REACTION_ID);
+            if (Number.isSafeInteger(reactionId) && reactionId > 0) {
+              try {
                 await github.request(
                   'DELETE /repos/{owner}/{repo}/issues/comments/{comment_id}/reactions/{reaction_id}',
                   {
                     owner: context.repo.owner,
                     repo: context.repo.repo,
                     comment_id: commentId,
-                    reaction_id: reaction.id,
+                    reaction_id: reactionId,
                   },
                 );
+              } catch (error) {
+                if (error.status !== 404) throw error;
               }
             }
             const resultReaction = process.env.REVIEW_RESULT === 'success'
