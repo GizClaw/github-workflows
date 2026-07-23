@@ -28,6 +28,11 @@ service:
   fallback;
 - fork PRs and drafts are skipped.
 
+Manual-request reactions expose state without adding timeline noise: `👀` means
+accepted/running, `🚀` means the review completed, `👎` means it failed, and
+`😕` means a newer request for the same PR superseded it. Only the newest
+manual request runs at a time.
+
 The PR event is deliberately an unprivileged signal with no secret:
 
 ```yaml
