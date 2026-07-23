@@ -662,31 +662,37 @@ jobs:
                   reaction_id: reactionId,
                 },
               );
-            } else {
-              const reactions = await github.paginate(
-                github.rest.reactions.listForIssueComment,
-                {
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  comment_id: commentId,
-                  per_page: 100,
-                },
-              );
-              for (const reaction of reactions) {
-                if (
-                  reaction.content === 'eyes' &&
-                  reaction.user?.login === 'github-actions[bot]'
-                ) {
-                  await github.request(
-                    'DELETE /repos/{owner}/{repo}/issues/comments/{comment_id}/reactions/{reaction_id}',
-                    {
-                      owner: context.repo.owner,
-                      repo: context.repo.repo,
-                      comment_id: commentId,
-                      reaction_id: reaction.id,
-                    },
-                  );
-                }
+            }
+
+            const reactions = await github.paginate(
+              github.rest.reactions.listForIssueComment,
+              {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: commentId,
+                per_page: 100,
+              },
+            );
+            const managedReactions = new Set([
+              'eyes',
+              'rocket',
+              'confused',
+              '-1',
+            ]);
+            for (const reaction of reactions) {
+              if (
+                managedReactions.has(reaction.content)
+                && reaction.user?.login === 'github-actions[bot]'
+              ) {
+                await github.request(
+                  'DELETE /repos/{owner}/{repo}/issues/comments/{comment_id}/reactions/{reaction_id}',
+                  {
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    comment_id: commentId,
+                    reaction_id: reaction.id,
+                  },
+                );
               }
             }
 
