@@ -132,7 +132,7 @@ jobs:
 
   review:
     needs: pull-request
-    if: false
+    if: ${{ false }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -254,7 +254,7 @@ jobs:
 
   publish:
     needs: [pull-request]
-    if: false
+    if: ${{ false }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
