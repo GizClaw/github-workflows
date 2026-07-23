@@ -255,7 +255,7 @@ jobs:
           sparse-checkout: .github/scripts/pr-review
           persist-credentials: false
 
-      - name: Fetch pull-request head objects without checking out its code
+      - name: Fetch exact pull-request objects without checking out its code
         id: fetch_head
         env:
           REVIEW_HEAD_REF: refs/remotes/openai-pr-review/pr-${{ needs.resolve.outputs.number }}-head
@@ -263,20 +263,18 @@ jobs:
         run: |
           set -euo pipefail
           git init --bare "$PR_DIFF_REPOSITORY"
-          git --git-dir="$PR_DIFF_REPOSITORY" fetch --no-tags \
-            "$GITHUB_WORKSPACE" \
-            "+$PR_BASE_SHA:refs/openai-pr-review/base"
           git --git-dir="$PR_DIFF_REPOSITORY" remote add origin \
             "$(git remote get-url origin)"
           basic_auth="$(printf 'x-access-token:%s' "$FETCH_TOKEN" | base64 | tr -d '\n')"
           if ! git --git-dir="$PR_DIFF_REPOSITORY" \
             -c "http.extraheader=AUTHORIZATION: basic $basic_auth" \
             fetch --no-tags origin \
+            "+$PR_BASE_SHA:refs/openai-pr-review/base" \
             "+refs/pull/$PULL_REQUEST_NUMBER/head:$REVIEW_HEAD_REF"
           then
-            reason="Could not fetch the pull-request head objects."
+            reason="Could not fetch the exact pull-request base and head objects."
             echo "failure_reason=$reason" >> "$GITHUB_OUTPUT"
-            echo "::error title=PR head fetch failed::$reason"
+            echo "::error title=PR object fetch failed::$reason"
             exit 1
           fi
           fetched_sha="$(git --git-dir="$PR_DIFF_REPOSITORY" \
