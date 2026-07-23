@@ -201,6 +201,9 @@ jobs:
       output_tokens: ${{ steps.run_review.outputs.output_tokens }}
       reasoning_output_tokens: ${{ steps.run_review.outputs.reasoning_output_tokens }}
       total_tokens: ${{ steps.run_review.outputs.total_tokens }}
+      credits_available: ${{ steps.run_review.outputs.credits_available }}
+      estimated_credits: ${{ steps.run_review.outputs.estimated_credits }}
+      credit_rates_json: ${{ steps.run_review.outputs.credit_rates_json }}
       usage_json: ${{ steps.run_review.outputs.usage_json }}
       session_key: ${{ steps.prepare_diff.outputs.session_key }}
       generation_key: ${{ steps.prepare_diff.outputs.generation_key }}
@@ -876,6 +879,9 @@ jobs:
           OUTPUT_TOKENS: ${{ needs.review.outputs.output_tokens }}
           REASONING_OUTPUT_TOKENS: ${{ needs.review.outputs.reasoning_output_tokens }}
           TOTAL_TOKENS: ${{ needs.review.outputs.total_tokens }}
+          CREDITS_AVAILABLE: ${{ needs.review.outputs.credits_available }}
+          ESTIMATED_CREDITS: ${{ needs.review.outputs.estimated_credits }}
+          CREDIT_RATES_JSON: ${{ needs.review.outputs.credit_rates_json }}
           USAGE_JSON: ${{ needs.review.outputs.usage_json }}
           SESSION_KEY: ${{ needs.review.outputs.session_key }}
           GENERATION_KEY: ${{ needs.review.outputs.generation_key }}
@@ -961,10 +967,11 @@ jobs:
                   '<details>',
                   '<summary>Per-chunk and aggregation usage</summary>',
                   '',
-                  '| Turn key | Time | Input | Cached | Cache hit | Cache write | Output | Reasoning | Total |',
-                  '| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |',
+                  '| Turn key | Time | Input | Cached | Cache hit | Cache write | Output | Reasoning | Total | Est. credits |',
+                  '| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |',
                   ...turns.map((turn) => {
                     const hit = Number(turn.cache_hit_ratio || 0) * 100;
+                    const credits = turn.estimated_credits;
                     return [
                       `| ${code(String(turn.key).slice(0, 100))}`,
                       duration(turn.duration_seconds),
@@ -974,7 +981,12 @@ jobs:
                       count(turn.cache_write_tokens),
                       count(turn.output_tokens),
                       count(turn.reasoning_output_tokens),
-                      `${count(turn.total_tokens)} |`,
+                      count(turn.total_tokens),
+                      `${
+                        credits === null || credits === undefined
+                          ? 'N/A'
+                          : Number(credits).toFixed(3)
+                      } |`,
                     ].join(' | ');
                   }),
                   '',
@@ -983,6 +995,24 @@ jobs:
               }
             } catch {
               usageDetails = '';
+            }
+            let creditRate = '';
+            try {
+              const rates = JSON.parse(process.env.CREDIT_RATES_JSON || '{}');
+              if (
+                Number.isFinite(Number(rates.input))
+                && Number.isFinite(Number(rates.cached_input))
+                && Number.isFinite(Number(rates.output))
+              ) {
+                creditRate = [
+                  '**Credit rate per 1M tokens:**',
+                  `${code(count(rates.input))} input /`,
+                  `${code(count(rates.cached_input))} cached /`,
+                  `${code(count(rates.output))} output`,
+                ].join(' ');
+              }
+            } catch {
+              creditRate = '';
             }
             const usage = process.env.USAGE_AVAILABLE === 'true'
               ? [
@@ -994,6 +1024,10 @@ jobs:
                   `**Output tokens:** ${code(count(process.env.OUTPUT_TOKENS))}`,
                   `**Reasoning tokens:** ${code(count(process.env.REASONING_OUTPUT_TOKENS))}`,
                   `**Total tokens:** ${code(count(process.env.TOTAL_TOKENS))}`,
+                  process.env.CREDITS_AVAILABLE === 'true'
+                    ? `**Estimated Codex credits:** ${code(process.env.ESTIMATED_CREDITS)}`
+                    : '**Estimated Codex credits:** unavailable for this model',
+                  creditRate,
                 ]
               : [
                   `**Review time:** ${code(duration(process.env.DURATION_SECONDS))}`,

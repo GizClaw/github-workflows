@@ -5,6 +5,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import {
   appendOutput,
+  estimateCodexCredits,
   findSession,
   numberInRanges,
   readJson,
@@ -220,7 +221,17 @@ try {
     ...generation.chunks.map((chunk) => chunk.metrics).filter(Boolean),
     generation.aggregate.metrics,
   ].filter(Boolean);
-  const turns = generationReused ? [] : generationTurns;
+  const turns = generationReused
+    ? []
+    : generationTurns.map((metrics) => ({
+      ...metrics,
+      estimated_credits: estimateCodexCredits({
+        model,
+        inputTokens: metrics.input_tokens,
+        cachedInputTokens: metrics.cached_input_tokens,
+        outputTokens: metrics.output_tokens,
+      })?.credits ?? null,
+    }));
   const totals = turns.reduce((total, metrics) => ({
     duration_seconds: total.duration_seconds + metrics.duration_seconds,
     input_tokens: total.input_tokens + metrics.input_tokens,
@@ -242,6 +253,12 @@ try {
   totals.cache_hit_ratio = totals.input_tokens === 0
     ? null
     : totals.cached_input_tokens / totals.input_tokens;
+  const creditEstimate = estimateCodexCredits({
+    model,
+    inputTokens: totals.input_tokens,
+    cachedInputTokens: totals.cached_input_tokens,
+    outputTokens: totals.output_tokens,
+  });
 
   appendOutput("review", JSON.stringify(review));
   appendOutput("session_id", sessionId);
@@ -261,6 +278,17 @@ try {
   appendOutput("output_tokens", totals.output_tokens);
   appendOutput("reasoning_output_tokens", totals.reasoning_output_tokens);
   appendOutput("total_tokens", totals.total_tokens);
+  appendOutput("credits_available", String(Boolean(creditEstimate)));
+  appendOutput(
+    "estimated_credits",
+    creditEstimate ? creditEstimate.credits.toFixed(3) : "",
+  );
+  appendOutput(
+    "credit_rates_json",
+    creditEstimate
+      ? JSON.stringify(creditEstimate.rates_per_million)
+      : "",
+  );
   appendOutput("failure_reason", "");
 } catch (error) {
   const reason = String(error?.message ?? error).replace(/\s+/g, " ").slice(0, 1000);

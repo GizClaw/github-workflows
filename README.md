@@ -42,7 +42,11 @@ superseded snapshots only after a replacement upload succeeds.
   reason and a link to the Actions run instead of leaving only a reaction.
 - Every published review reports the Codex review time, input, cached-input,
   cache-write, output, reasoning-output, and total token counts, plus the cache
-  hit ratio. The report includes the stable PR session key, content-addressed
+  hit ratio. It also reports estimated Codex credits using the current public
+  per-million-token model rate card: uncached input uses the input rate,
+  cached input uses the cached-input rate, and output (including reasoning)
+  uses the output rate. This is a token-derived estimate, not an API billing
+  ledger value. The report includes the stable PR session key, content-addressed
   generation key, reviewed commit range, deterministic diff chunk count, and
   per-chunk/aggregation usage. Cached-input tokens are part of input tokens,
   and reasoning-output tokens are part of output tokens; neither is added to

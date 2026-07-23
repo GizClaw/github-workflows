@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import {
+  estimateCodexCredits,
   numberInRanges,
   rangesFromNumbers,
   sha256,
@@ -17,6 +18,31 @@ assert.deepEqual(rangesFromNumbers([5, 2, 3, 3, 8]), [[2, 3], [5, 5], [8, 8]]);
 assert.equal(numberInRanges(3, [[2, 3]]), true);
 assert.equal(numberInRanges(4, [[2, 3]]), false);
 assert.equal(sha256("review"), "c97ace4c8fef2cee8fa0f3c9f52aab18dbd4f42438afe362ffb8f75ce4c04b84");
+assert.deepEqual(
+  estimateCodexCredits({
+    model: "gpt-5.6-terra",
+    inputTokens: 1_000_000,
+    cachedInputTokens: 800_000,
+    outputTokens: 10_000,
+  }),
+  {
+    credits: 21.25,
+    uncached_input_tokens: 200_000,
+    cached_input_tokens: 800_000,
+    output_tokens: 10_000,
+    rates_per_million: {
+      input: 62.5,
+      cached_input: 6.25,
+      output: 375,
+    },
+  },
+);
+assert.equal(estimateCodexCredits({
+  model: "unknown",
+  inputTokens: 1,
+  cachedInputTokens: 0,
+  outputTokens: 1,
+}), null);
 assert.deepEqual(
   usageDelta(
     { input_tokens: 100, cached_input_tokens: 50, output_tokens: 10 },
@@ -213,7 +239,7 @@ fs.writeFileSync(outputFile, JSON.stringify({
         "review-output-schema.json",
       ),
       GENERATION_KEY: latestGeneration.key,
-      MODEL: "gpt-test",
+      MODEL: "gpt-5.6-terra",
       EFFORT: "medium",
       REVIEW_INSTRUCTIONS: "Review the diff.",
     },
@@ -246,7 +272,7 @@ fs.writeFileSync(outputFile, JSON.stringify({
       ),
       GENERATION_KEY: latestGeneration.key,
       GENERATION_REUSED: "true",
-      MODEL: "gpt-test",
+      MODEL: "gpt-5.6-terra",
       EFFORT: "medium",
       REVIEW_INSTRUCTIONS: "Review the diff.",
     },
@@ -261,6 +287,8 @@ fs.writeFileSync(outputFile, JSON.stringify({
   assert.match(reusedOutputs, /^output_tokens=0$/m);
   assert.match(reusedOutputs, /^reasoning_output_tokens=0$/m);
   assert.match(reusedOutputs, /^total_tokens=0$/m);
+  assert.match(reusedOutputs, /^credits_available=true$/m);
+  assert.match(reusedOutputs, /^estimated_credits=0\.000$/m);
 } finally {
   fs.rmSync(temporary, { recursive: true, force: true });
 }

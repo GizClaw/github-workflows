@@ -6,6 +6,63 @@ import { spawnSync } from "node:child_process";
 export const STATE_SCHEMA_VERSION = 2;
 export const LISTING_VERSION = 1;
 export const CHUNKER_VERSION = 1;
+export const CODEX_CREDIT_RATES = Object.freeze({
+  "gpt-5.6-sol": Object.freeze({
+    input: 125,
+    cached_input: 12.5,
+    output: 750,
+  }),
+  "gpt-5.6-terra": Object.freeze({
+    input: 62.5,
+    cached_input: 6.25,
+    output: 375,
+  }),
+  "gpt-5.6-luna": Object.freeze({
+    input: 25,
+    cached_input: 2.5,
+    output: 150,
+  }),
+  "gpt-5.5": Object.freeze({
+    input: 125,
+    cached_input: 12.5,
+    output: 750,
+  }),
+  "gpt-5.4": Object.freeze({
+    input: 62.5,
+    cached_input: 6.25,
+    output: 375,
+  }),
+  "gpt-5.4-mini": Object.freeze({
+    input: 18.75,
+    cached_input: 1.875,
+    output: 113,
+  }),
+});
+
+export function estimateCodexCredits({
+  model,
+  inputTokens,
+  cachedInputTokens,
+  outputTokens,
+}) {
+  const rates = CODEX_CREDIT_RATES[String(model).toLowerCase()];
+  if (!rates) return null;
+  const input = Math.max(0, Number(inputTokens) || 0);
+  const cached = Math.min(input, Math.max(0, Number(cachedInputTokens) || 0));
+  const output = Math.max(0, Number(outputTokens) || 0);
+  const uncached = input - cached;
+  return {
+    credits: (
+      (uncached * rates.input)
+      + (cached * rates.cached_input)
+      + (output * rates.output)
+    ) / 1_000_000,
+    uncached_input_tokens: uncached,
+    cached_input_tokens: cached,
+    output_tokens: output,
+    rates_per_million: rates,
+  };
+}
 
 export function sha256(value) {
   return crypto.createHash("sha256").update(value).digest("hex");
