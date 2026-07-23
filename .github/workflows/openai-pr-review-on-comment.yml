@@ -32,6 +32,12 @@ jobs:
       head_sha: ${{ steps.pr.outputs.head_sha }}
       request_comment_id: ${{ steps.pr.outputs.request_comment_id }}
       review_focus: ${{ steps.pr.outputs.review_focus }}
+      review: ${{ steps.codex.outputs.final-message }}
+    env:
+      PULL_REQUEST_NUMBER: ${{ steps.pr.outputs.number }}
+      PR_BASE_SHA: ${{ steps.pr.outputs.base_sha }}
+      PR_HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+      REQUEST_COMMENT_ID: ${{ steps.pr.outputs.request_comment_id }}
     steps:
       - name: Authorize explicit review request
         id: pr
@@ -84,9 +90,49 @@ jobs:
             core.setOutput('base_sha', pullRequest.base.sha);
             core.setOutput('head_sha', pullRequest.head.sha);
 
+      - name: Check out trusted pull-request base commit
+        if: steps.pr.outputs.eligible == 'true'
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ steps.pr.outputs.base_sha }}
+          persist-credentials: false
+
+      - name: Mark manual request in progress
+        id: request_reaction
+        if: steps.pr.outputs.eligible == 'true' && env.REQUEST_COMMENT_ID != ''
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          script: |
+            const { data: reaction } = await github.rest.reactions.createForIssueComment({ owner: context.repo.owner, repo: context.repo.repo, comment_id: Number(process.env.REQUEST_COMMENT_ID), content: 'eyes' });
+            core.setOutput('reaction_id', String(reaction.id));
+
+      - name: Review pull request with OpenAI
+        id: codex
+        if: steps.pr.outputs.eligible == 'true'
+        uses: openai/codex-action@52fe01ec70a42f454c9d2ebd47598f9fd6893d56 # v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          model: gpt-5.6-terra
+          effort: medium
+          sandbox: read-only
+          safety-strategy: drop-sudo
+          prompt: Review this pull request using its diff. Return a concise review.
+
+      - name: Record manual request result
+        if: always() && steps.pr.outputs.request_comment_id != ''
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          REQUEST_REACTION_ID: ${{ steps.request_reaction.outputs.reaction_id }}
+          REVIEW_OUTCOME: ${{ steps.codex.outcome }}
+        with:
+          script: |
+            const commentId = Number(process.env.REQUEST_COMMENT_ID); const reactionId = Number(process.env.REQUEST_REACTION_ID);
+            if (reactionId) await github.request('DELETE /repos/{owner}/{repo}/issues/comments/{comment_id}/reactions/{reaction_id}', { owner: context.repo.owner, repo: context.repo.repo, comment_id: commentId, reaction_id: reactionId });
+            await github.rest.reactions.createForIssueComment({ owner: context.repo.owner, repo: context.repo.repo, comment_id: commentId, content: process.env.REVIEW_OUTCOME === 'success' ? 'rocket' : process.env.REVIEW_OUTCOME === 'cancelled' ? 'confused' : '-1' });
+
   review:
     needs: pull-request
-    if: needs.pull-request.outputs.eligible == 'true'
+    if: false
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -207,14 +253,14 @@ jobs:
             });
 
   publish:
-    needs: [pull-request, review]
-    if: needs.review.result == 'success'
+    needs: [pull-request]
+    if: false
     runs-on: ubuntu-latest
     permissions:
       contents: read
       pull-requests: write
     env:
-      REVIEW: ${{ needs.review.outputs.review }}
+      REVIEW: ${{ needs.pull-request.outputs.review }}
       PULL_REQUEST_NUMBER: ${{ needs.pull-request.outputs.number }}
       PR_HEAD_SHA: ${{ needs.pull-request.outputs.head_sha }}
     steps:
