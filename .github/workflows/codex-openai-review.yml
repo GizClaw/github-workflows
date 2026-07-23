@@ -66,7 +66,6 @@ jobs:
     outputs:
       eligible: ${{ steps.pr.outputs.eligible }}
       number: ${{ steps.pr.outputs.number }}
-      base_ref: ${{ steps.pr.outputs.base_ref }}
       base_sha: ${{ steps.pr.outputs.base_sha }}
       head_sha: ${{ steps.pr.outputs.head_sha }}
       request_comment_id: ${{ steps.pr.outputs.request_comment_id }}
@@ -108,7 +107,6 @@ jobs:
               && (sameRepository || trustedBaseEvent);
             core.setOutput('eligible', String(eligible));
             core.setOutput('number', String(pr.number));
-            core.setOutput('base_ref', pr.base.ref);
             core.setOutput('base_sha', pr.base.sha);
             core.setOutput('head_sha', pr.head.sha);
             core.setOutput('request_comment_id', requestCommentId);
@@ -222,7 +220,6 @@ jobs:
           || '' }}
     env:
       PULL_REQUEST_NUMBER: ${{ needs.resolve.outputs.number }}
-      PR_BASE_REF: ${{ needs.resolve.outputs.base_ref }}
       PR_BASE_SHA: ${{ needs.resolve.outputs.base_sha }}
       PR_HEAD_SHA: ${{ needs.resolve.outputs.head_sha }}
       REQUEST_COMMENT_ID: ${{ needs.resolve.outputs.request_comment_id }}
@@ -266,13 +263,15 @@ jobs:
         run: |
           set -euo pipefail
           git init --bare "$PR_DIFF_REPOSITORY"
+          git --git-dir="$PR_DIFF_REPOSITORY" fetch --no-tags \
+            "$GITHUB_WORKSPACE" \
+            "+$PR_BASE_SHA:refs/openai-pr-review/base"
           git --git-dir="$PR_DIFF_REPOSITORY" remote add origin \
             "$(git remote get-url origin)"
           basic_auth="$(printf 'x-access-token:%s' "$FETCH_TOKEN" | base64 | tr -d '\n')"
           if ! git --git-dir="$PR_DIFF_REPOSITORY" \
             -c "http.extraheader=AUTHORIZATION: basic $basic_auth" \
             fetch --no-tags origin \
-            "+refs/heads/$PR_BASE_REF:refs/openai-pr-review/base" \
             "+refs/pull/$PULL_REQUEST_NUMBER/head:$REVIEW_HEAD_REF"
           then
             reason="Could not fetch the pull-request head objects."
