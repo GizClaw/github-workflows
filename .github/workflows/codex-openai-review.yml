@@ -39,6 +39,9 @@ on:
       OPENAI_API_KEY:
         description: OpenAI API key supplied explicitly by the calling repository.
         required: true
+      REQUEST_TOKEN:
+        description: Optional caller token used only to update a manual request reaction.
+        required: false
     outputs:
       review:
         description: Structured JSON result produced by the OpenAI review job.
@@ -96,6 +99,7 @@ jobs:
         env:
           REQUEST_COMMENT_ID: ${{ inputs.request_comment_id }}
         with:
+          github-token: ${{ secrets.REQUEST_TOKEN }}
           script: |
             await github.rest.reactions.createForIssueComment({
               owner: context.repo.owner,
@@ -158,6 +162,7 @@ jobs:
           CODEX_OUTCOME: ${{ steps.codex.outcome }}
           JOB_STATUS: ${{ job.status }}
         with:
+          github-token: ${{ secrets.REQUEST_TOKEN }}
           script: |
             const commentId = Number(process.env.REQUEST_COMMENT_ID);
             const reactions = await github.paginate(github.rest.reactions.listForIssueComment, {

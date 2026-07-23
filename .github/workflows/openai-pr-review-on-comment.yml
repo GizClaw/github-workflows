@@ -96,3 +96,4 @@ jobs:
       request_comment_id: ${{ needs.pull-request.outputs.request_comment_id }}
     secrets:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      REQUEST_TOKEN: ${{ github.token }}
