@@ -178,6 +178,7 @@ try {
   fs.mkdirSync(fakeBin);
   fs.mkdirSync(codexHome);
   fs.writeFileSync(contextFile, "{}\n");
+  const reviewOutput = path.join(temporary, "review-output");
   const fakeCodex = path.join(fakeBin, "codex");
   fs.writeFileSync(fakeCodex, `#!/usr/bin/env node
 const fs = require("fs");
@@ -230,6 +231,7 @@ fs.writeFileSync(outputFile, JSON.stringify({
     env: {
       ...process.env,
       PATH: `${fakeBin}${path.delimiter}${process.env.PATH}`,
+      GITHUB_OUTPUT: reviewOutput,
       PR_REVIEW_STATE_DIR: state,
       CODEX_HOME: codexHome,
       REPOSITORY_DIR: repo,
@@ -251,6 +253,18 @@ fs.writeFileSync(outputFile, JSON.stringify({
   ));
   assert.equal(completedLedger.generations.at(-1).status, "completed");
   assert.equal(completedLedger.generations.at(-1).aggregate.metrics.input_tokens, 100);
+  const reviewOutputs = fs.readFileSync(reviewOutput, "utf8");
+  assert.match(reviewOutputs, /^credits_available=true$/m);
+  assert.match(reviewOutputs, /^estimated_credits=0\.022$/m);
+  const usageOutput = reviewOutputs
+    .split("\n")
+    .find((line) => line.startsWith("usage_json="));
+  assert.ok(usageOutput);
+  const usage = JSON.parse(usageOutput.slice("usage_json=".length));
+  assert.equal(usage.turns.length, 2);
+  assert.equal(usage.turns.every(
+    (turn) => typeof turn.estimated_credits === "number",
+  ), true);
 
   const reusedOutput = path.join(temporary, "reused-output");
   const reusedResult = spawnSync(process.execPath, [
