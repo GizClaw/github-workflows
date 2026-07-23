@@ -180,6 +180,13 @@ jobs:
       pull-requests: write
     outputs:
       review: ${{ steps.codex.outputs.final-message }}
+      duration_seconds: ${{ steps.metrics.outputs.duration_seconds }}
+      usage_available: ${{ steps.metrics.outputs.usage_available }}
+      input_tokens: ${{ steps.metrics.outputs.input_tokens }}
+      cached_input_tokens: ${{ steps.metrics.outputs.cached_input_tokens }}
+      output_tokens: ${{ steps.metrics.outputs.output_tokens }}
+      reasoning_output_tokens: ${{ steps.metrics.outputs.reasoning_output_tokens }}
+      total_tokens: ${{ steps.metrics.outputs.total_tokens }}
     env:
       PULL_REQUEST_NUMBER: ${{ needs.resolve.outputs.number }}
       PR_BASE_SHA: ${{ needs.resolve.outputs.base_sha }}
@@ -251,6 +258,10 @@ jobs:
             echo "::error title=Missing OPENAI_API_KEY::Pass the required OPENAI_API_KEY organization secret explicitly from the calling workflow."
             exit 1
           fi
+      - name: Record review start time
+        id: review-start
+        run: echo "epoch=$(date +%s)" >> "$GITHUB_OUTPUT"
+
       - name: Review pull request with OpenAI
         id: codex
         uses: openai/codex-action@52fe01ec70a42f454c9d2ebd47598f9fd6893d56 # v1
@@ -259,6 +270,7 @@ jobs:
           allow-users: '*'
           model: ${{ inputs.model }}
           effort: ${{ inputs.effort }}
+          codex-home: ${{ runner.temp }}/openai-pr-review-codex-home
           sandbox: read-only
           safety-strategy: drop-sudo
           output-schema: |
@@ -300,6 +312,63 @@ jobs:
 
             Return only the JSON object required by the output schema. Include only actionable findings that are introduced by this pull request. Every finding must identify an added line in the diff, using its exact repository-relative path and new-file line number; otherwise omit it. Use P0 for release-blocking defects, P1 for urgent defects, P2 for normal defects, and P3 for lower-priority defects. If there are no actionable findings, return an empty findings array and a concise summary.
 
+      - name: Collect review time and token usage
+        id: metrics
+        env:
+          CODEX_HOME: ${{ runner.temp }}/openai-pr-review-codex-home
+          REVIEW_STARTED_AT: ${{ steps.review-start.outputs.epoch }}
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+
+          const integer = (value) => Number.isSafeInteger(value) && value >= 0
+            ? value
+            : 0;
+          const output = (name, value) => {
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, `${name}=${value}\n`);
+          };
+
+          const startedAt = Number(process.env.REVIEW_STARTED_AT);
+          output('duration_seconds', Math.max(0, Math.floor(Date.now() / 1000) - startedAt));
+
+          let usage;
+          const sessions = path.join(process.env.CODEX_HOME, 'sessions');
+          if (fs.existsSync(sessions)) {
+            const files = fs.readdirSync(sessions, { recursive: true })
+              .filter((file) => String(file).endsWith('.jsonl'))
+              .map((file) => path.join(sessions, String(file)));
+            for (const file of files) {
+              for (const line of fs.readFileSync(file, 'utf8').split('\n')) {
+                if (!line) continue;
+                try {
+                  const item = JSON.parse(line);
+                  if (
+                    item.type === 'event_msg'
+                    && item.payload?.type === 'token_count'
+                    && item.payload.info?.total_token_usage
+                  ) {
+                    usage = item.payload.info.total_token_usage;
+                  }
+                } catch {
+                  // Ignore incomplete or non-JSON session lines.
+                }
+              }
+            }
+          }
+
+          output('usage_available', String(Boolean(usage)));
+          output('input_tokens', integer(usage?.input_tokens));
+          output('cached_input_tokens', integer(usage?.cached_input_tokens));
+          output('output_tokens', integer(usage?.output_tokens));
+          output('reasoning_output_tokens', integer(usage?.reasoning_output_tokens));
+          output(
+            'total_tokens',
+            integer(usage?.total_tokens)
+              || integer(usage?.input_tokens) + integer(usage?.output_tokens),
+          );
+          NODE
+
   publish:
     needs: [resolve, review]
     if: needs.review.result == 'success'
@@ -314,6 +383,13 @@ jobs:
           REVIEW: ${{ needs.review.outputs.review }}
           MODEL: ${{ inputs.model }}
           EFFORT: ${{ inputs.effort }}
+          DURATION_SECONDS: ${{ needs.review.outputs.duration_seconds }}
+          USAGE_AVAILABLE: ${{ needs.review.outputs.usage_available }}
+          INPUT_TOKENS: ${{ needs.review.outputs.input_tokens }}
+          CACHED_INPUT_TOKENS: ${{ needs.review.outputs.cached_input_tokens }}
+          OUTPUT_TOKENS: ${{ needs.review.outputs.output_tokens }}
+          REASONING_OUTPUT_TOKENS: ${{ needs.review.outputs.reasoning_output_tokens }}
+          TOTAL_TOKENS: ${{ needs.review.outputs.total_tokens }}
           PULL_REQUEST_NUMBER: ${{ needs.resolve.outputs.number }}
           PR_HEAD_SHA: ${{ needs.resolve.outputs.head_sha }}
         with:
@@ -321,6 +397,15 @@ jobs:
             const maxCommentLength = 60_000;
             const maxFindingLength = 12_000;
             const review = JSON.parse(process.env.REVIEW);
+            const count = (value) => Number(value || 0).toLocaleString('en-US');
+            const duration = (value) => {
+              const seconds = Math.max(0, Number(value || 0));
+              const minutes = Math.floor(seconds / 60);
+              const remainder = seconds % 60;
+              return minutes === 0
+                ? `${remainder}s`
+                : `${minutes}m ${remainder}s`;
+            };
             const code = (value) => {
               const text = String(value);
               const delimiter = '`'.repeat(Math.max(
@@ -402,11 +487,21 @@ jobs:
                     `  ${String(finding.body).slice(0, 2_000).replaceAll('\n', '\n  ')}`,
                   ].join('\n')),
                 ].join('\n\n');
+            const usage = process.env.USAGE_AVAILABLE === 'true'
+              ? [
+                  `**Review time:** ${code(duration(process.env.DURATION_SECONDS))}`,
+                  `**Tokens:** ${code(count(process.env.TOTAL_TOKENS))} total (${count(process.env.INPUT_TOKENS)} input, ${count(process.env.CACHED_INPUT_TOKENS)} cached input, ${count(process.env.OUTPUT_TOKENS)} output, ${count(process.env.REASONING_OUTPUT_TOKENS)} reasoning output)`,
+                ]
+              : [
+                  `**Review time:** ${code(duration(process.env.DURATION_SECONDS))}`,
+                  '**Tokens:** unavailable',
+                ];
             let body = [
               '## 🤖 OpenAI PR review',
               `**Reviewed commit:** ${code(process.env.PR_HEAD_SHA.slice(0, 10))}`,
               `**Model:** ${code(process.env.MODEL)}`,
               `**Reasoning effort:** ${code(process.env.EFFORT)}`,
+              ...usage,
               String(review.summary).slice(0, 12_000),
               inlineFindings.length === 0 && summaryFindings.length === 0
                 ? 'No actionable findings.'

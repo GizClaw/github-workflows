@@ -35,6 +35,10 @@ shared reviewer can expose its lifecycle on the reviewed PR head, and
   head commit. The check links to its Actions run and reports running,
   successful, failed, or cancelled state in the PR Checks UI. Comment-triggered
   reviews continue to execute from the trusted default-branch workflow.
+- Every published review reports the Codex review time and its total, input,
+  cached-input, output, and reasoning-output token counts. Cached-input tokens
+  are part of input tokens, and reasoning-output tokens are part of output
+  tokens; neither is added to the total a second time.
 - Fork PRs run through the caller repository's trusted default-branch
   `pull_request_target` workflow and use the caller's explicitly forwarded
   secret. Secrets from the contributor's fork are not imported or used.
