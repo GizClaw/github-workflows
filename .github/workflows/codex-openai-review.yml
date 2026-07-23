@@ -94,6 +94,7 @@ jobs:
     permissions:
       checks: write
       issues: write
+      pull-requests: write
     outputs:
       check_run_id: ${{ steps.status.outputs.check_run_id }}
       request_reaction_id: ${{ steps.status.outputs.request_reaction_id }}
@@ -127,7 +128,10 @@ jobs:
                 ].join(':'),
                 output: {
                   title: 'Review in progress',
-                  summary: 'OpenAI is reviewing this pull request.',
+                  summary: [
+                    'OpenAI is reviewing this pull request.',
+                    `[Open the Actions run](${process.env.DETAILS_URL}).`,
+                  ].join(' '),
                 },
               });
               core.setOutput('check_run_id', String(checkRun.id));
@@ -411,6 +415,7 @@ jobs:
     permissions:
       checks: write
       issues: write
+      pull-requests: write
     steps:
       - name: Record review result
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
@@ -421,6 +426,7 @@ jobs:
           START_RESULT: ${{ needs.start.result }}
           REVIEW_RESULT: ${{ needs.review.result }}
           PUBLISH_RESULT: ${{ needs.publish.result }}
+          DETAILS_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         with:
           script: |
             const results = [
@@ -435,11 +441,15 @@ jobs:
               : cancelled
                 ? 'cancelled'
                 : 'failure';
-            const summary = {
+            const resultSummary = {
               success: 'OpenAI review completed and was published.',
               cancelled: 'This review was superseded or cancelled.',
               failure: 'OpenAI review did not complete successfully.',
             }[conclusion];
+            const summary = [
+              resultSummary,
+              `[Open the Actions run](${process.env.DETAILS_URL}).`,
+            ].join(' ');
 
             const checkRunId = Number(process.env.CHECK_RUN_ID);
             if (Number.isSafeInteger(checkRunId) && checkRunId > 0) {
