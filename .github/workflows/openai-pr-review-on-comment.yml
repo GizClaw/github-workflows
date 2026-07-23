@@ -25,6 +25,8 @@ jobs:
       (github.event_name == 'issue_comment' && github.event.issue.pull_request) ||
       github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    env:
+      REACTION_TOKEN: ${{ secrets.OPENAI_REVIEW_REACTION_TOKEN }}
     outputs:
       eligible: ${{ steps.pr.outputs.eligible }}
       number: ${{ steps.pr.outputs.number }}
@@ -81,6 +83,21 @@ jobs:
             core.setOutput('base_sha', pullRequest.base.sha);
             core.setOutput('head_sha', pullRequest.head.sha);
 
+      - name: Mark manual request in progress
+        if: steps.pr.outputs.request_comment_id != '' && env.REACTION_TOKEN != ''
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          REQUEST_COMMENT_ID: ${{ steps.pr.outputs.request_comment_id }}
+        with:
+          github-token: ${{ secrets.OPENAI_REVIEW_REACTION_TOKEN }}
+          script: |
+            await github.rest.reactions.createForIssueComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: Number(process.env.REQUEST_COMMENT_ID),
+              content: 'eyes',
+            });
+
   review:
     needs: pull-request
     if: needs.pull-request.outputs.eligible == 'true'
@@ -93,7 +110,55 @@ jobs:
       pull_request_number: ${{ needs.pull-request.outputs.number }}
       base_sha: ${{ needs.pull-request.outputs.base_sha }}
       head_sha: ${{ needs.pull-request.outputs.head_sha }}
-      request_comment_id: ${{ needs.pull-request.outputs.request_comment_id }}
     secrets:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-      REQUEST_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  complete-request:
+    needs: [pull-request, review]
+    if: always() && needs.pull-request.outputs.request_comment_id != ''
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    env:
+      REACTION_TOKEN: ${{ secrets.OPENAI_REVIEW_REACTION_TOKEN }}
+      REQUEST_COMMENT_ID: ${{ needs.pull-request.outputs.request_comment_id }}
+      REVIEW_RESULT: ${{ needs.review.result }}
+    steps:
+      - name: Replace manual request reaction
+        if: env.REACTION_TOKEN != ''
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          github-token: ${{ secrets.OPENAI_REVIEW_REACTION_TOKEN }}
+          script: |
+            const commentId = Number(process.env.REQUEST_COMMENT_ID);
+            const { data: actor } = await github.rest.users.getAuthenticated();
+            const reactions = await github.paginate(github.rest.reactions.listForIssueComment, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: commentId,
+              per_page: 100,
+            });
+            for (const reaction of reactions) {
+              if (reaction.content === 'eyes' && reaction.user?.login === actor.login) {
+                await github.request(
+                  'DELETE /repos/{owner}/{repo}/issues/comments/{comment_id}/reactions/{reaction_id}',
+                  {
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    comment_id: commentId,
+                    reaction_id: reaction.id,
+                  },
+                );
+              }
+            }
+            const resultReaction = process.env.REVIEW_RESULT === 'success'
+              ? 'rocket'
+              : process.env.REVIEW_RESULT === 'cancelled'
+                ? 'confused'
+                : '-1';
+            await github.rest.reactions.createForIssueComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: commentId,
+              content: resultReaction,
+            });
