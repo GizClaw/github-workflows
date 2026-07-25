@@ -960,8 +960,8 @@ jobs:
                 ].join('\n\n');
             const findingCount = inlineFindings.length + summaryFindings.length;
             const conclusion = findingCount === 0
-              ? '# ✅ 结论：通过（PASS）'
-              : `# ❌ 结论：不通过（FAIL，发现 ${findingCount} 个可操作问题）`;
+              ? '# ✅ Conclusion: PASS'
+              : `# ❌ Conclusion: FAIL (${findingCount} actionable finding${findingCount === 1 ? '' : 's'} found)`;
             let usageDetails = '';
             try {
               const usageData = JSON.parse(process.env.USAGE_JSON || '{}');

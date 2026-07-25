@@ -55,8 +55,8 @@ const workflowSource = fs.readFileSync(
   "utf8",
 );
 assert.match(workflowSource, /const conclusion = findingCount === 0/);
-assert.match(workflowSource, /'# ✅ 结论：通过（PASS）'/);
-assert.match(workflowSource, /`# ❌ 结论：不通过（FAIL，发现 /);
+assert.match(workflowSource, /'# ✅ Conclusion: PASS'/);
+assert.match(workflowSource, /`# ❌ Conclusion: FAIL \(\$\{findingCount\} actionable finding/);
 assert.match(
   workflowSource,
   /let body = \[\n\s+conclusion,\n\s+'## 🤖 OpenAI PR review'/,
