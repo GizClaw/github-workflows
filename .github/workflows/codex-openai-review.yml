@@ -958,6 +958,10 @@ jobs:
                     `  ${String(finding.body).slice(0, 2_000).replaceAll('\n', '\n  ')}`,
                   ].join('\n')),
                 ].join('\n\n');
+            const findingCount = inlineFindings.length + summaryFindings.length;
+            const conclusion = findingCount === 0
+              ? '# ✅ 结论：通过（PASS）'
+              : `# ❌ 结论：不通过（FAIL，发现 ${findingCount} 个可操作问题）`;
             let usageDetails = '';
             try {
               const usageData = JSON.parse(process.env.USAGE_JSON || '{}');
@@ -1034,6 +1038,7 @@ jobs:
                   '**Tokens:** unavailable',
                 ];
             let body = [
+              conclusion,
               '## 🤖 OpenAI PR review',
               `**Reviewed commit:** ${code(process.env.PR_HEAD_SHA.slice(0, 10))}`,
               `**Reviewed range:** ${code(`${process.env.REVIEW_FROM_SHA.slice(0, 10)}..${process.env.PR_HEAD_SHA.slice(0, 10)}`)}`,
@@ -1046,7 +1051,7 @@ jobs:
               ...usage,
               usageDetails,
               String(review.summary).slice(0, 12_000),
-              inlineFindings.length === 0 && summaryFindings.length === 0
+              findingCount === 0
                 ? 'No actionable findings.'
                 : `${inlineFindings.length} inline finding${inlineFindings.length === 1 ? '' : 's'} published.`,
               fallback,

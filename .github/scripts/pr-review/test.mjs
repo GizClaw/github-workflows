@@ -43,6 +43,25 @@ assert.equal(estimateCodexCredits({
   cachedInputTokens: 0,
   outputTokens: 1,
 }), null);
+
+const workflowSource = fs.readFileSync(
+  path.join(
+    path.dirname(new URL(import.meta.url).pathname),
+    "..",
+    "..",
+    "workflows",
+    "codex-openai-review.yml",
+  ),
+  "utf8",
+);
+assert.match(workflowSource, /const conclusion = findingCount === 0/);
+assert.match(workflowSource, /'# ✅ 结论：通过（PASS）'/);
+assert.match(workflowSource, /`# ❌ 结论：不通过（FAIL，发现 /);
+assert.match(
+  workflowSource,
+  /let body = \[\n\s+conclusion,\n\s+'## 🤖 OpenAI PR review'/,
+);
+
 assert.deepEqual(
   usageDelta(
     { input_tokens: 100, cached_input_tokens: 50, output_tokens: 10 },
