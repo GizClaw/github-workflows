@@ -134,6 +134,7 @@ try {
         "results",
         `${String(chunk.index).padStart(4, "0")}.json`,
       );
+      fs.mkdirSync(path.dirname(resultFile), { recursive: true, mode: 0o700 });
       const prompt = [
         `Review diff chunk ${chunk.index} of ${generation.chunks.length}.`,
         "",

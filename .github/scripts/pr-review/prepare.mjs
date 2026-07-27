@@ -152,6 +152,7 @@ if (
     && sha256(fs.readFileSync(path.join(generationDir, chunk.relative_path))) === chunk.sha256
   ))
 ) {
+  fs.mkdirSync(resultsDir, { recursive: true, mode: 0o700 });
   appendOutput("generation_key", generationKey);
   appendOutput("session_key", sessionKey);
   appendOutput("from_sha", fromSha);

@@ -150,6 +150,32 @@ try {
     )));
   }
   const firstGeneration = ledger.generations[0];
+  const firstGenerationResults = path.join(
+    state,
+    "generations",
+    firstGeneration.key,
+    "results",
+  );
+  assert.ok(fs.existsSync(firstGenerationResults));
+  fs.rmSync(firstGenerationResults, { recursive: true });
+  const restored = spawnSync(process.execPath, [
+    path.join(path.dirname(new URL(import.meta.url).pathname), "prepare.mjs"),
+  ], {
+    cwd: repo,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      REPOSITORY_DIR: repo,
+      PR_REVIEW_STATE_DIR: state,
+      PR_BASE_SHA: base,
+      PR_HEAD_SHA: head,
+      SESSION_KEY: "repo:1:pr:2:v2",
+      MAX_DIFF_BYTES: "1000000",
+      CHUNK_TARGET_BYTES: "600",
+    },
+  });
+  assert.equal(restored.status, 0, restored.stderr);
+  assert.ok(fs.existsSync(firstGenerationResults));
   firstGeneration.status = "completed";
   firstGeneration.completed_at = new Date().toISOString();
   fs.writeFileSync(
@@ -235,13 +261,18 @@ fs.appendFileSync(sessionFile, JSON.stringify({
     }}
   }
 }) + "\\n");
-fs.mkdirSync(path.dirname(outputFile), { recursive: true });
 fs.writeFileSync(outputFile, JSON.stringify({
   summary: "Fake review complete.",
   findings: []
 }));
 `, { mode: 0o755 });
   const latestGeneration = updatedLedger.generations.at(-1);
+  fs.rmSync(path.join(
+    state,
+    "generations",
+    latestGeneration.key,
+    "results",
+  ), { recursive: true });
   const runResult = spawnSync(process.execPath, [
     path.join(path.dirname(new URL(import.meta.url).pathname), "run.mjs"),
   ], {
