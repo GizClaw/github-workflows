@@ -1,0 +1,39 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["verdict", "blockers"],
+  "properties": {
+    "verdict": {
+      "type": "string",
+      "enum": ["pass", "fail"]
+    },
+    "blockers": {
+      "type": "array",
+      "maxItems": 25,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["category", "code", "title", "body"],
+        "properties": {
+          "category": {
+            "type": "string",
+            "enum": ["pr-format", "issue-design", "plan-conformance"]
+          },
+          "code": {
+            "type": "string",
+            "maxLength": 80
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 240
+          },
+          "body": {
+            "type": "string",
+            "maxLength": 12000
+          }
+        }
+      }
+    }
+  }
+}
+

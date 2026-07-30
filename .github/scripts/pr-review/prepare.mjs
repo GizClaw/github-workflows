@@ -40,6 +40,7 @@ const stateDir = required("PR_REVIEW_STATE_DIR");
 const baseSha = required("PR_BASE_SHA");
 const headSha = required("PR_HEAD_SHA");
 const sessionKey = required("SESSION_KEY");
+const readinessContextSha256 = required("READINESS_CONTEXT_SHA256");
 const maxDiffBytes = positiveInteger("MAX_DIFF_BYTES");
 const chunkTargetBytes = positiveInteger("CHUNK_TARGET_BYTES");
 const ledgerPath = path.join(stateDir, "review-ledger.json");
@@ -96,6 +97,7 @@ if (
   && completed.to_sha === headSha
   && completed.base_sha === baseSha
   && completed.effective_diff_sha256 === effectiveDiffSha256
+  && completed.readiness_context_sha256 === readinessContextSha256
 ) {
   appendOutput("generation_key", completed.key);
   appendOutput("session_key", sessionKey);
@@ -133,6 +135,7 @@ const generationIdentity = {
   from_sha: fromSha,
   to_sha: headSha,
   effective_diff_sha256: effectiveDiffSha256,
+  readiness_context_sha256: readinessContextSha256,
   chunk_target_bytes: chunkTargetBytes,
 };
 const generationKey = sha256(JSON.stringify(generationIdentity));

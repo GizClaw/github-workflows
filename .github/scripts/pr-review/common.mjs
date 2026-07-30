@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 
-export const STATE_SCHEMA_VERSION = 2;
+export const STATE_SCHEMA_VERSION = 3;
 export const LISTING_VERSION = 1;
 export const CHUNKER_VERSION = 1;
 export const CODEX_CREDIT_RATES = Object.freeze({
