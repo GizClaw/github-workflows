@@ -349,6 +349,7 @@ jobs:
                           issueType { name }
                           parent { number }
                           subIssues(first: 100) {
+                            totalCount
                             nodes { number }
                           }
                         }
@@ -396,6 +397,7 @@ jobs:
                     body: clip(issue.body, 80_000),
                     issue_type: issue.issueType?.name || '',
                     parent_number: issue.parent?.number ?? null,
+                    sub_issue_count: issue.subIssues.totalCount,
                     sub_issue_numbers: issue.subIssues.nodes.map(
                       (subIssue) => subIssue.number,
                     ),

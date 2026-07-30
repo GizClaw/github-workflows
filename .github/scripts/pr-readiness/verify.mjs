@@ -49,7 +49,10 @@ async function fetchPullRequest() {
                     body
                     issueType { name }
                     parent { number }
-                    subIssues(first: 100) { nodes { number } }
+                    subIssues(first: 100) {
+                      totalCount
+                      nodes { number }
+                    }
                   }
                 }
                 reviewThreads(first: 100) {
@@ -100,6 +103,7 @@ const linkedIssues = pullRequest.closingIssuesReferences.nodes
     body: String(issue.body).slice(0, 80_000),
     issue_type: issue.issueType?.name || "",
     parent_number: issue.parent?.number ?? null,
+    sub_issue_count: issue.subIssues.totalCount,
     sub_issue_numbers: issue.subIssues.nodes.map((item) => item.number),
   }));
 const current = analyzePullRequest({

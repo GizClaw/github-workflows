@@ -30,6 +30,8 @@ superseded snapshots only after a replacement upload succeeds.
 - Reviews an open, non-draft PR when it is opened, reopened, edited, marked
   ready, or receives a new head through `synchronize`, including a PR from an
   external fork.
+- Recalculates open PRs that natively close an Issue when that Issue is edited,
+  reopened, typed, or untyped, using the same caller and reusable PR reviewer.
 - A commenter can request a fresh review of an internal or fork PR using
   `@codex` or `@codex review <focus>`. Apply repository and API-project usage
   limits appropriate for a public trigger.
@@ -138,12 +140,15 @@ on:
     types: [opened, reopened, synchronize, edited, ready_for_review]
   issue_comment:
     types: [created]
+  issues:
+    types: [edited, reopened, typed, untyped]
   workflow_dispatch:
 ```
 
 The caller passes `OPENAI_API_KEY` explicitly and uses per-PR concurrency. Do
-not use `secrets: inherit`. After changing a linked Issue without changing the
-PR, use **Run workflow** or `@codex review` to recalculate the Check.
+not use `secrets: inherit`. Issue events resolve native closing PRs and invoke
+the same reusable PR reviewer; there is no separate Issue-review dispatcher or
+second Check.
 
 ## Rollout
 

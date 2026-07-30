@@ -40,6 +40,9 @@ function markdownStructure(body) {
 }
 
 export function issueSnapshot(issue) {
+  const subIssueNumbers = [...new Set(
+    (issue.sub_issue_numbers ?? []).map(Number).filter(Number.isSafeInteger),
+  )].sort((left, right) => left - right);
   return {
     repository: String(issue.repository ?? ""),
     number: Number(issue.number),
@@ -47,9 +50,10 @@ export function issueSnapshot(issue) {
     body: String(issue.body ?? ""),
     issue_type: String(issue.issue_type ?? ""),
     parent_number: issue.parent_number == null ? null : Number(issue.parent_number),
-    sub_issue_numbers: [...new Set(
-      (issue.sub_issue_numbers ?? []).map(Number).filter(Number.isSafeInteger),
-    )].sort((left, right) => left - right),
+    sub_issue_count: issue.sub_issue_count == null
+      ? subIssueNumbers.length
+      : Number(issue.sub_issue_count),
+    sub_issue_numbers: subIssueNumbers,
   };
 }
 
@@ -80,19 +84,28 @@ export function analyzeIssue(issue, { implementationIssue = true } = {}) {
   }
   if (
     snapshot.issue_type.toLowerCase() === "task"
-    && snapshot.sub_issue_numbers.length === 0
+    && snapshot.sub_issue_count === 0
   ) {
     blockers.push(blocker(
       "task-without-sub-issues",
       "A Task Issue must be a tracking container with native sub-issues.",
     ));
   }
+  if (snapshot.sub_issue_count > snapshot.sub_issue_numbers.length) {
+    blockers.push(blocker(
+      "sub-issues-truncated",
+      "The workflow could not snapshot every native sub-issue and must fail closed.",
+    ));
+  }
 
   const structure = markdownStructure(snapshot.body);
   const sections = structure.headings.map((item) => item.heading);
   if (
+    snapshot.issue_type.toLowerCase() !== "task"
+    && (
     sections.length !== REQUIRED_SECTIONS.length
     || sections.some((section, index) => section !== REQUIRED_SECTIONS[index])
+    )
   ) {
     blockers.push(blocker(
       "invalid-section-contract",
@@ -115,7 +128,11 @@ export function analyzeIssue(issue, { implementationIssue = true } = {}) {
       ))
       .map((item) => item.line)
       .join("\n");
-  for (const label of ["Parent", "Prerequisite of", "Follow up to"]) {
+  for (
+    const label of snapshot.issue_type.toLowerCase() === "task"
+      ? []
+      : ["Parent", "Prerequisite of", "Follow up to"]
+  ) {
     if (new RegExp(`^${label}:`, "m").test(background)) {
       blockers.push(blocker(
         "invalid-background-relationship",
@@ -123,7 +140,10 @@ export function analyzeIssue(issue, { implementationIssue = true } = {}) {
       ));
     }
   }
-  if (/^- (?:Prerequisite of|Follow up to):\s+#\d+\s*$/m.test(background)) {
+  if (
+    snapshot.issue_type.toLowerCase() !== "task"
+    && /^- (?:Prerequisite of|Follow up to):\s+#\d+\s*$/m.test(background)
+  ) {
     blockers.push(blocker(
       "invalid-background-relationship",
       "Prerequisite of and Follow up to relationships must use nested Issue lists.",

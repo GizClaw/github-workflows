@@ -23,7 +23,7 @@ export function analyzePullRequest(input) {
       ? null : String(input.trigger_comment_id),
   };
   const linkedIssues = (input.linked_issues ?? [])
-    .map((issue) => analyzeIssue(issue, { implementationIssue: true }))
+    .map((issue) => analyzeIssue(issue, { implementationIssue: false }))
     .sort((left, right) => (
       left.snapshot.repository.localeCompare(right.snapshot.repository)
       || left.snapshot.number - right.snapshot.number
@@ -31,6 +31,9 @@ export function analyzePullRequest(input) {
   const sameRepository = linkedIssues.filter(
     (issue) => issue.snapshot.repository.toLowerCase()
       === pullRequest.repository.toLowerCase(),
+  );
+  const implementationIssues = sameRepository.filter(
+    (issue) => issue.snapshot.issue_type.toLowerCase() !== "task",
   );
   const deterministicBlockers = [];
   if (!PREFIXED_TITLE.test(pullRequest.title)) {
@@ -47,7 +50,7 @@ export function analyzePullRequest(input) {
       "Pull-request body must describe the delivered change and validation.",
     ));
   }
-  if (sameRepository.length === 0) {
+  if (implementationIssues.length === 0) {
     deterministicBlockers.push(blocker(
       "pr-linkage",
       "missing-closing-issue",

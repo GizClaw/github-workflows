@@ -31,6 +31,20 @@ assert.ok(analyzeIssue({ ...valid, issue_type: "" })
   .deterministic_blockers.some((item) => item.code === "missing-issue-type"));
 assert.ok(analyzeIssue({ ...valid, issue_type: "Task" })
   .deterministic_blockers.some((item) => item.code === "tracking-task"));
+assert.ok(analyzeIssue({
+  ...valid,
+  sub_issue_count: 101,
+  sub_issue_numbers: Array.from({ length: 100 }, (_, index) => index + 1),
+}).deterministic_blockers.some(
+  (item) => item.code === "sub-issues-truncated",
+));
+assert.deepEqual(analyzeIssue({
+  ...valid,
+  issue_type: "Task",
+  body: "",
+  sub_issue_count: 1,
+  sub_issue_numbers: [20],
+}, { implementationIssue: false }).deterministic_blockers, []);
 assert.ok(analyzeIssue({ ...valid, body: "## Goal\n\nToo little." })
   .deterministic_blockers.some((item) => item.code === "invalid-section-contract"));
 assert.ok(analyzeIssue({

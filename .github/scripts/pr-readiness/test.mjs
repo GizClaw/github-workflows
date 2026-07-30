@@ -60,7 +60,28 @@ assert.deepEqual(blockerCodes(analyzePullRequest({
     issue_type: "Task",
     sub_issue_numbers: [20],
   }],
-})), ["tracking-task"]);
+})), ["missing-closing-issue"]);
+assert.deepEqual(blockerCodes(analyzePullRequest({
+  ...input,
+  linked_issues: [
+    input.linked_issues[0],
+    {
+      ...input.linked_issues[0],
+      number: 11,
+      issue_type: "Task",
+      body: "",
+      sub_issue_numbers: [20],
+    },
+  ],
+})), []);
+assert.ok(blockerCodes(analyzePullRequest({
+  ...input,
+  linked_issues: [{
+    ...input.linked_issues[0],
+    sub_issue_count: 101,
+    sub_issue_numbers: Array.from({ length: 100 }, (_, index) => index + 1),
+  }],
+})).includes("sub-issues-truncated"));
 assert.ok(blockerCodes(analyzePullRequest({
   ...input,
   linked_issue_count: 2,
@@ -228,7 +249,7 @@ try {
             body: issueBody,
             issueType: { name: "Feature" },
             parent: null,
-            subIssues: { nodes: [] },
+            subIssues: { totalCount: 0, nodes: [] },
           }],
         },
         reviewThreads: {
