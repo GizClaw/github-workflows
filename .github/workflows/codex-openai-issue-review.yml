@@ -44,10 +44,13 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      issues: write
+      issues: read
     outputs:
       verdict: ${{ steps.run.outputs.verdict }}
       review: ${{ steps.run.outputs.review }}
+      reviewed_updated_at: ${{ steps.context.outputs.updated_at }}
+      issue_snapshot_sha256: ${{ steps.prepare.outputs.issue_snapshot_sha256 }}
+      trusted_policy_sha256: ${{ steps.prepare.outputs.trusted_policy_sha256 }}
     steps:
       - name: Resolve trusted default branch and untrusted Issue
         id: context
@@ -164,13 +167,19 @@ jobs:
           node
           .openai-issue-review-workflow-source/.github/scripts/issue-review/run.mjs
 
+  publish:
+    needs: review
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
       - name: Publish current Issue readiness
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         env:
-          REVIEW: ${{ steps.run.outputs.review }}
-          REVIEWED_UPDATED_AT: ${{ steps.context.outputs.updated_at }}
-          ISSUE_SNAPSHOT_SHA256: ${{ steps.prepare.outputs.issue_snapshot_sha256 }}
-          TRUSTED_POLICY_SHA256: ${{ steps.prepare.outputs.trusted_policy_sha256 }}
+          REVIEW: ${{ needs.review.outputs.review }}
+          REVIEWED_UPDATED_AT: ${{ needs.review.outputs.reviewed_updated_at }}
+          ISSUE_SNAPSHOT_SHA256: ${{ needs.review.outputs.issue_snapshot_sha256 }}
+          TRUSTED_POLICY_SHA256: ${{ needs.review.outputs.trusted_policy_sha256 }}
           WORKFLOW_SOURCE_SHA: ${{ job.workflow_sha }}
           MODEL: ${{ inputs.model }}
           EFFORT: ${{ inputs.effort }}
