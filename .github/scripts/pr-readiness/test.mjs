@@ -39,6 +39,17 @@ assert.ok(analyzePullRequest({ ...input, title: "Bad title" })
   .deterministic_blockers.some((item) => item.code === "invalid-title"));
 assert.ok(analyzePullRequest({ ...input, body: "" })
   .deterministic_blockers.some((item) => item.code === "missing-body"));
+assert.ok(analyzePullRequest({ ...input, body_truncated: true })
+  .deterministic_blockers.some((item) => item.code === "pr-body-truncated"));
+assert.ok(analyzePullRequest({
+  ...input,
+  linked_issues: [{
+    ...input.linked_issues[0],
+    body_truncated: true,
+  }],
+}).deterministic_blockers.some(
+  (item) => item.code === "issue-body-truncated",
+));
 assert.ok(analyzePullRequest({ ...input, linked_issues: [] })
   .deterministic_blockers.some((item) => item.code === "missing-closing-issue"));
 assert.ok(blockerCodes(analyzePullRequest({

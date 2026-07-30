@@ -25,6 +25,12 @@ assert.notEqual(
   issueSnapshotSha256(valid),
   issueSnapshotSha256({ ...valid, body: `${validBody}\nchanged` }),
 );
+assert.notEqual(
+  issueSnapshotSha256(valid),
+  issueSnapshotSha256({ ...valid, body_truncated: true }),
+);
+assert.ok(analyzeIssue({ ...valid, body_truncated: true })
+  .deterministic_blockers.some((item) => item.code === "issue-body-truncated"));
 assert.ok(analyzeIssue({ ...valid, title: "Bad title" })
   .deterministic_blockers.some((item) => item.code === "invalid-title"));
 assert.ok(analyzeIssue({ ...valid, issue_type: "" })

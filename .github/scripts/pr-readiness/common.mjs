@@ -17,6 +17,7 @@ export function analyzePullRequest(input) {
     number: Number(input.number),
     title: String(input.title ?? ""),
     body: String(input.body ?? ""),
+    body_truncated: input.body_truncated === true,
     base_sha: String(input.base_sha ?? ""),
     head_sha: String(input.head_sha ?? ""),
     trigger_comment_id: input.trigger_comment_id == null
@@ -48,6 +49,13 @@ export function analyzePullRequest(input) {
       "pr-format",
       "missing-body",
       "Pull-request body must describe the delivered change and validation.",
+    ));
+  }
+  if (pullRequest.body_truncated) {
+    deterministicBlockers.push(blocker(
+      "pr-format",
+      "pr-body-truncated",
+      "The workflow could not snapshot the complete pull-request body and must fail closed.",
     ));
   }
   if (implementationIssues.length === 0) {

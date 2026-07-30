@@ -423,6 +423,8 @@ jobs:
                 pull_request: {
                   title: clip(pullRequest.title, 500),
                   body: clip(pullRequest.body, 80_000),
+                  body_truncated:
+                    String(pullRequest.body ?? '').length > 80_000,
                 },
                 linked_issue_count:
                   pullRequest.closingIssuesReferences.totalCount,
@@ -433,6 +435,8 @@ jobs:
                     number: issue.number,
                     title: clip(issue.title, 500),
                     body: clip(issue.body, 80_000),
+                    body_truncated:
+                      String(issue.body ?? '').length > 80_000,
                     issue_type: issue.issueType?.name || '',
                     parent_number: issue.parent?.number ?? null,
                     sub_issue_count: issue.subIssues.totalCount,

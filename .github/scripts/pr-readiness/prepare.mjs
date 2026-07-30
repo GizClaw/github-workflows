@@ -15,6 +15,7 @@ context.readiness = analyzePullRequest({
   number: Number(required("PULL_REQUEST_NUMBER")),
   title: context.pull_request?.title,
   body: context.pull_request?.body,
+  body_truncated: context.pull_request?.body_truncated,
   base_sha: required("PR_BASE_SHA"),
   head_sha: required("PR_HEAD_SHA"),
   linked_issues: context.linked_issues,

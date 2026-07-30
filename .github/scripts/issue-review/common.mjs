@@ -48,6 +48,7 @@ export function issueSnapshot(issue) {
     number: Number(issue.number),
     title: String(issue.title ?? ""),
     body: String(issue.body ?? ""),
+    body_truncated: issue.body_truncated === true,
     issue_type: String(issue.issue_type ?? ""),
     parent_number: issue.parent_number == null ? null : Number(issue.parent_number),
     sub_issue_count: issue.sub_issue_count == null
@@ -74,6 +75,12 @@ export function analyzeIssue(issue, { implementationIssue = true } = {}) {
     blockers.push(blocker(
       "missing-issue-type",
       "Issue must have a GitHub Issue Type.",
+    ));
+  }
+  if (snapshot.body_truncated) {
+    blockers.push(blocker(
+      "issue-body-truncated",
+      "The workflow could not snapshot the complete Issue body and must fail closed.",
     ));
   }
   if (implementationIssue && snapshot.issue_type.toLowerCase() === "task") {
