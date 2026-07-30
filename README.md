@@ -194,6 +194,19 @@ When editing PR metadata, preserve the native closing-Issue relationship.
 Removing or changing that relationship changes the plan-conformance identity
 and intentionally invalidates the affected Code evidence.
 
+### Closing hierarchy validation
+
+When a PR closes a parent with native sub-issues, validate the Close Set in two
+stages:
+
+1. Close only the parent while one native child remains open. Confirm
+   `OpenAI PR Review` fails and names the missing open child.
+2. Add the open child to the same native closing-Issue set. Confirm all three
+   OpenAI Checks pass and the unchanged parent Issue evidence is `reused`.
+
+Already-closed children satisfy the hierarchy and do not need to be repeated
+in the current PR. Including an already-closed child is also harmless.
+
 1. Copy `openai-pr-review-dispatch.yml` into the caller repository's default
    branch.
 2. Replace local reusable-workflow paths with a protected `v1` reference or an
