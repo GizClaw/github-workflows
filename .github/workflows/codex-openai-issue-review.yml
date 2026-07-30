@@ -60,7 +60,7 @@ jobs:
         with:
           script: |
             const fs = require('node:fs');
-            const repository = await github.graphql(`
+            const data = await github.graphql(`
               query($owner: String!, $repo: String!, $number: Int!) {
                 repository(owner: $owner, name: $repo) {
                   nameWithOwner
@@ -81,6 +81,7 @@ jobs:
               repo: context.repo.repo,
               number: Number(${{ inputs.issue_number }}),
             });
+            const repository = data.repository;
             if (!repository.issue) throw new Error('Issue was not found');
             const issue = repository.issue;
             fs.writeFileSync(process.env.ISSUE_INPUT_FILE, JSON.stringify({

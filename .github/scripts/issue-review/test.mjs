@@ -23,6 +23,15 @@ const valid = {
   parent_number: null,
   sub_issue_numbers: [],
 };
+const workflowSource = fs.readFileSync(path.join(
+  path.dirname(new URL(import.meta.url).pathname),
+  "..",
+  "..",
+  "workflows",
+  "codex-openai-issue-review.yml",
+), "utf8");
+assert.match(workflowSource, /const data = await github\.graphql\(`/);
+assert.match(workflowSource, /const repository = data\.repository;/);
 assert.deepEqual(analyzeIssue(valid).deterministic_blockers, []);
 assert.equal(issueSnapshotSha256(valid), issueSnapshotSha256({ ...valid }));
 assert.notEqual(
