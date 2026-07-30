@@ -21,9 +21,11 @@ It must pass an `OPENAI_API_KEY` Actions secret explicitly. Set `model`,
 `pr-readiness-instructions` in the caller to match the repository's trusted
 policy. The caller must grant `checks: write` so the
 shared reviewer can expose its lifecycle on the reviewed PR head, and
-`issues: write` for request reactions. It must also grant `actions: write` so
-the reviewer can restore the latest per-PR Codex session artifact and delete
-superseded snapshots only after a replacement upload succeeds.
+`pull-requests: write` for request reactions on PR comments and native review
+publication. It must also grant `issues: write` for Issue-triggered refreshes
+and `actions: write` so the reviewer can restore the latest per-PR Codex
+session artifact and delete superseded snapshots only after a replacement
+upload succeeds.
 
 ## Behavior
 

@@ -134,6 +134,7 @@ jobs:
     permissions:
       checks: write
       issues: write
+      pull-requests: write
     outputs:
       pr_check_run_id: ${{ steps.status.outputs.pr_check_run_id }}
       issue_check_run_id: ${{ steps.status.outputs.issue_check_run_id }}
@@ -1370,6 +1371,7 @@ jobs:
     permissions:
       checks: write
       issues: write
+      pull-requests: write
     steps:
       - name: Record review result
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8

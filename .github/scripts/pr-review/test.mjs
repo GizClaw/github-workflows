@@ -125,6 +125,16 @@ const workflowSource = fs.readFileSync(
   ),
   "utf8",
 );
+for (const jobName of ["start", "finalize"]) {
+  assert.match(
+    workflowSource,
+    new RegExp(
+      `^  ${jobName}:\\n(?:(?!^  \\S)[\\s\\S])*?^      pull-requests: write$`,
+      "m",
+    ),
+    `${jobName} must be allowed to manage reactions on PR comments`,
+  );
+}
 const runSource = fs.readFileSync(
   path.join(path.dirname(new URL(import.meta.url).pathname), "run.mjs"),
   "utf8",
