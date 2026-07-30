@@ -114,6 +114,7 @@ jobs:
             const trustedBaseEvent = [
               'pull_request_target',
               'issue_comment',
+              'issues',
               'workflow_dispatch',
             ].includes(event) || (
               Number.isSafeInteger(requestedNumber) && requestedNumber > 0
