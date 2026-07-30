@@ -137,6 +137,8 @@ assert.match(runSource, /linked_issue_evidence/);
 assert.match(runSource, /Use the checked-out trusted base repository as evidence/);
 assert.match(runSource, /Apply the write-issue contract/);
 assert.match(runSource, /workflow_source_sha: workflowSourceSha/);
+assert.match(runSource, /deterministic PR linkage owns that decision/);
+assert.match(runSource, /do not return a second blocker for the same condition/);
 assert.match(workflowSource, /const overallPass = readiness\.verdict === 'pass' && findingCount === 0/);
 assert.match(workflowSource, /'# ✅ OpenAI PR Review: PASS'/);
 assert.match(workflowSource, /'# ❌ OpenAI PR Review: FAIL'/);
