@@ -114,7 +114,6 @@ jobs:
             const trustedBaseEvent = [
               'pull_request_target',
               'issue_comment',
-              'issues',
               'workflow_dispatch',
             ].includes(event) || (
               Number.isSafeInteger(requestedNumber) && requestedNumber > 0
@@ -135,10 +134,8 @@ jobs:
     permissions:
       checks: write
       issues: write
-      pull-requests: write
     outputs:
       check_run_id: ${{ steps.status.outputs.check_run_id }}
-      readiness_check_run_id: ${{ steps.status.outputs.readiness_check_run_id }}
       request_reaction_id: ${{ steps.status.outputs.request_reaction_id }}
       failure_reason: ${{ steps.status.outputs.failure_reason }}
     steps:
@@ -172,38 +169,12 @@ jobs:
                 output: {
                   title: 'Review in progress',
                   summary: [
-                    'OpenAI is reviewing this pull request.',
-                    `[Open the Actions run](${process.env.DETAILS_URL}).`,
-                  ].join(' '),
-                },
-              });
-              core.setOutput('check_run_id', String(checkRun.id));
-              const { data: readinessCheckRun } = await github.rest.checks.create({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                name: 'OpenAI PR readiness',
-                head_sha: process.env.PR_HEAD_SHA,
-                status: 'in_progress',
-                started_at: new Date().toISOString(),
-                details_url: process.env.DETAILS_URL,
-                external_id: [
-                  'readiness',
-                  process.env.RUN_ID,
-                  process.env.RUN_ATTEMPT,
-                  process.env.PULL_REQUEST_NUMBER,
-                ].join(':'),
-                output: {
-                  title: 'PR readiness review in progress',
-                  summary: [
                     'OpenAI is validating PR metadata, linked Issue design, plan conformance, and code findings.',
                     `[Open the Actions run](${process.env.DETAILS_URL}).`,
                   ].join(' '),
                 },
               });
-              core.setOutput(
-                'readiness_check_run_id',
-                String(readinessCheckRun.id),
-              );
+              core.setOutput('check_run_id', String(checkRun.id));
 
               if (Number.isSafeInteger(commentId) && commentId > 0) {
                 const { data: reaction } = await github.rest.reactions.createForIssueComment({
@@ -232,8 +203,8 @@ jobs:
     permissions:
       actions: write
       contents: read
-      issues: write
-      pull-requests: write
+      issues: read
+      pull-requests: read
     outputs:
       review: ${{ steps.run_review.outputs.review }}
       readiness_verdict: ${{ steps.evaluate_readiness.outputs.verdict }}
@@ -1020,6 +991,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      issues: read
       pull-requests: write
     outputs:
       failure_reason: >-
@@ -1286,13 +1258,11 @@ jobs:
     permissions:
       checks: write
       issues: write
-      pull-requests: write
     steps:
       - name: Record review result
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         env:
           CHECK_RUN_ID: ${{ needs.start.outputs.check_run_id }}
-          READINESS_CHECK_RUN_ID: ${{ needs.start.outputs.readiness_check_run_id }}
           READINESS_VERDICT: ${{ needs.review.outputs.readiness_verdict }}
           READINESS_EVIDENCE: ${{ needs.review.outputs.readiness_evidence }}
           PULL_REQUEST_NUMBER: ${{ needs.resolve.outputs.number }}
@@ -1313,11 +1283,14 @@ jobs:
               process.env.PUBLISH_RESULT,
             ];
             const cancelled = results.includes('cancelled');
-            const succeeded = results.every((result) => result === 'success');
-            const conclusion = succeeded
-              ? 'success'
-              : cancelled
-                ? 'cancelled'
+            const executionSucceeded = results.every(
+              (result) => result === 'success',
+            );
+            const reviewPassed = process.env.READINESS_VERDICT === 'pass';
+            const conclusion = cancelled
+              ? 'cancelled'
+              : executionSucceeded && reviewPassed
+                ? 'success'
                 : 'failure';
             const failureReason = [
               process.env.START_FAILURE_REASON,
@@ -1330,11 +1303,27 @@ jobs:
               .replace(/\s+/g, ' ')
               .replaceAll('@', '@\u200b')
               .slice(0, 1_000);
-            const resultSummary = {
-              success: 'OpenAI review completed and was published.',
-              cancelled: 'This review was superseded or cancelled.',
-              failure: `**Reason:** ${safeFailureReason}`,
-            }[conclusion];
+            let readiness;
+            try {
+              readiness = JSON.parse(process.env.READINESS_EVIDENCE || '{}');
+            } catch {
+              readiness = {};
+            }
+            const blockers = Array.isArray(readiness.blockers)
+              ? readiness.blockers
+              : [];
+            const resultSummary = conclusion === 'success'
+              ? 'OpenAI review found no configured blockers. This is not a pull-request approval.'
+              : conclusion === 'cancelled'
+                ? 'This review was superseded or cancelled.'
+                : executionSucceeded && blockers.length > 0
+                  ? [
+                      `Found ${blockers.length} review blocker${blockers.length === 1 ? '' : 's'}:`,
+                      ...blockers.slice(0, 25).map((blocker) => (
+                        `- **${String(blocker.source).slice(0, 80)}:** ${String(blocker.message).replaceAll('@', '@\u200b').slice(0, 1_000)}`
+                      )),
+                    ].join('\n')
+                  : `**Reason:** ${safeFailureReason}`;
             const summary = [
               resultSummary,
               `[Open the Actions run](${process.env.DETAILS_URL}).`,
@@ -1351,70 +1340,18 @@ jobs:
                 completed_at: new Date().toISOString(),
                 output: {
                   title: {
-                    success: 'Review completed',
+                    success: 'Review passed',
                     cancelled: 'Review cancelled',
-                    failure: 'Review completed with an error',
+                    failure: executionSucceeded
+                      ? 'Review blocked'
+                      : 'Review completed with an error',
                   }[conclusion],
-                  summary,
+                  summary: summary.slice(0, 65_000),
                 },
               });
             }
 
-            const readinessCheckRunId = Number(
-              process.env.READINESS_CHECK_RUN_ID,
-            );
-            if (
-              Number.isSafeInteger(readinessCheckRunId)
-              && readinessCheckRunId > 0
-            ) {
-              const readinessConclusion = cancelled
-                ? 'cancelled'
-                : succeeded && process.env.READINESS_VERDICT === 'pass'
-                  ? 'success'
-                  : 'failure';
-              let readiness;
-              try {
-                readiness = JSON.parse(process.env.READINESS_EVIDENCE || '{}');
-              } catch {
-                readiness = {};
-              }
-              const blockers = Array.isArray(readiness.blockers)
-                ? readiness.blockers
-                : [];
-              const readinessSummary = [
-                readinessConclusion === 'success'
-                  ? 'No configured automated PR readiness blockers were found. This is not a pull-request approval.'
-                  : readinessConclusion === 'cancelled'
-                    ? 'This readiness review was superseded or cancelled.'
-                    : blockers.length > 0
-                      ? [
-                          `Found ${blockers.length} readiness blocker${blockers.length === 1 ? '' : 's'}:`,
-                          ...blockers.slice(0, 25).map((blocker) => (
-                            `- **${String(blocker.source).slice(0, 80)}:** ${String(blocker.message).replaceAll('@', '@\u200b').slice(0, 1_000)}`
-                          )),
-                        ].join('\n')
-                      : `Readiness could not pass. ${safeFailureReason}`,
-                `[Open the Actions run](${process.env.DETAILS_URL}).`,
-              ].join('\n\n');
-              await github.rest.checks.update({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                check_run_id: readinessCheckRunId,
-                status: 'completed',
-                conclusion: readinessConclusion,
-                completed_at: new Date().toISOString(),
-                output: {
-                  title: {
-                    success: 'PR readiness passed',
-                    cancelled: 'PR readiness cancelled',
-                    failure: 'PR readiness failed',
-                  }[readinessConclusion],
-                  summary: readinessSummary.slice(0, 65_000),
-                },
-              });
-            }
-
-            if (conclusion === 'failure') {
+            if (!executionSucceeded && conclusion === 'failure') {
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,

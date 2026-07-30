@@ -61,8 +61,18 @@ assert.match(
   workflowSource,
   /let body = \[\n\s+conclusion,\n\s+'## 🤖 OpenAI PR review',\n\s+codeConclusion,/,
 );
-assert.match(workflowSource, /name: 'OpenAI PR readiness'/);
+assert.equal(
+  (workflowSource.match(/name: 'OpenAI PR review'/g) || []).length,
+  1,
+);
+assert.doesNotMatch(workflowSource, /name: 'OpenAI PR readiness'/);
+assert.doesNotMatch(workflowSource, /readiness_check_run_id/);
 assert.match(workflowSource, /READINESS_VERDICT/);
+assert.match(
+  workflowSource,
+  /executionSucceeded && reviewPassed[\s\S]*?\? 'success'/,
+);
+assert.match(workflowSource, /failure: executionSucceeded[\s\S]*?'Review blocked'/);
 
 assert.deepEqual(
   usageDelta(

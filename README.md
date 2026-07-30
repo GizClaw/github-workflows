@@ -1,14 +1,12 @@
 # GizClaw GitHub Workflows
 
-This repository provides reusable Issue-led pull-request review workflows and
-complete copyable callers.
+This repository provides an Issue-led pull-request review workflow and a
+complete copyable caller.
 
 | File | Role |
 | --- | --- |
 | `.github/workflows/codex-openai-review.yml` | Reusable OpenAI PR reviewer for any repository. |
-| `.github/workflows/codex-openai-issue-review.yml` | Reusable implementation-Issue readiness reviewer. |
 | `.github/workflows/openai-pr-review-dispatch.yml` | GizClaw's trusted PR trigger and copyable caller. |
-| `.github/workflows/openai-issue-review-dispatch.yml` | GizClaw's Issue-change trigger and linked-PR refresh caller. |
 
 The trigger file is the example. A consuming repository creates one workflow
 with the same events, permissions, concurrency, and `review` job, then changes
@@ -43,10 +41,10 @@ superseded snapshots only after a replacement upload succeeds.
   head commit. The check links to its Actions run and reports running,
   successful, failed, or cancelled state in the PR Checks UI. Comment-triggered
   reviews continue to execute from the trusted default-branch workflow.
-- Every accepted review also creates an `OpenAI PR readiness` Check Run on the
-  exact PR head. It succeeds only when the PR contract, native implementation
-  Issue linkage, Issue design, plan conformance, and code review all pass.
-- A failed attempt publishes a titled PR comment with the specific failure
+- The single `OpenAI PR review` Check succeeds only when the PR contract,
+  native implementation Issue linkage, Issue design, plan conformance, and
+  code review all pass. Any blocker makes that Check fail on the exact PR head.
+- An execution failure publishes a titled PR comment with the specific failure
   reason and a link to the Actions run instead of leaving only a reaction.
 - Every published review reports the Codex review time, input, cached-input,
   cache-write, output, reasoning-output, and total token counts, plus the cache
@@ -126,9 +124,9 @@ native Issue snapshots, trusted policy, reusable-workflow source, model, and
 effort. A new head, PR metadata edit, linked-Issue edit, policy change, or
 workflow change invalidates older evidence.
 
-`OpenAI PR readiness: success` means only that the configured automated
-blockers were absent. It is not an approval and does not replace human review,
-hardware or product acceptance, deployment approval, or branch protection.
+`OpenAI PR review: success` means only that the configured automated blockers
+were absent. It is not an approval and does not replace human review, hardware
+or product acceptance, or deployment approval.
 
 ## Trusted caller triggers
 
@@ -143,26 +141,23 @@ on:
   workflow_dispatch:
 ```
 
-The copyable Issue caller uses trusted default-branch `issues` events for
-`edited`, `reopened`, `typed`, and `untyped`, plus `workflow_dispatch`. It
-reviews the changed Issue, resolves open native closing PRs, and recalculates
-their readiness.
-
-Both callers pass `OPENAI_API_KEY` explicitly and use per-PR or per-Issue
-concurrency. Do not use `secrets: inherit`.
+The caller passes `OPENAI_API_KEY` explicitly and uses per-PR concurrency. Do
+not use `secrets: inherit`. After changing a linked Issue without changing the
+PR, use **Run workflow** or `@codex review` to recalculate the Check.
 
 ## Rollout
 
-1. Copy both dispatch workflows into the caller repository's default branch.
+1. Copy `openai-pr-review-dispatch.yml` into the caller repository's default
+   branch.
 2. Replace local reusable-workflow paths with a protected `v1` reference or an
    immutable commit SHA.
 3. Configure trusted repository-specific review instructions.
 4. Store `OPENAI_API_KEY` in an allowlisted organization or repository secret
    and forward it explicitly.
 5. Open a test PR that natively closes an implementation-ready Issue and
-   confirm both Check Runs are attached to the exact head.
+   confirm the `OpenAI PR review` Check is attached to the exact head.
 6. Push a new commit and confirm the previous readiness PASS is not reused.
 7. Test invalid PR metadata, an incomplete Issue, an unexplained plan
    deviation, and an actionable code finding.
-8. Only after live tests pass, configure `OpenAI PR readiness` as a required
+8. Only after live tests pass, configure `OpenAI PR review` as a required
    status check in the caller repository ruleset.

@@ -8,17 +8,6 @@ import { spawnSync } from "node:child_process";
 import { REQUIRED_SECTIONS } from "../issue-review/common.mjs";
 import { analyzePullRequest, evaluateReadiness } from "./common.mjs";
 
-const scriptsDirectory = path.dirname(new URL(import.meta.url).pathname);
-const reviewerWorkflow = fs.readFileSync(
-  path.resolve(scriptsDirectory, "../../workflows/codex-openai-review.yml"),
-  "utf8",
-);
-assert.match(
-  reviewerWorkflow,
-  /const trustedBaseEvent = \[[\s\S]*?'issues',[\s\S]*?\]\.includes\(event\)/,
-  "Issue-triggered linked-PR refreshes must be trusted for fork PRs",
-);
-
 const issueBody = REQUIRED_SECTIONS.map((section) => (
   `## ${section}\n\n${section} details.`
 )).join("\n\n");
