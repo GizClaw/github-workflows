@@ -1,6 +1,10 @@
 #!/usr/bin/env node
 
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { spawnSync } from "node:child_process";
 import { REQUIRED_SECTIONS } from "../issue-review/common.mjs";
 import { analyzePullRequest, evaluateReadiness } from "./common.mjs";
 
@@ -76,5 +80,62 @@ assert.equal(evaluateReadiness({
   model: "gpt-5.6-terra",
   effort: "medium",
 }).verdict, "fail");
+
+const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "pr-readiness-test-"));
+try {
+  const fixtureFile = path.join(temporary, "graphql.json");
+  const outputFile = path.join(temporary, "github-output");
+  const fixture = {
+    repository: {
+      nameWithOwner: input.repository,
+      pullRequest: {
+        title: input.title,
+        body: input.body,
+        baseRefOid: input.base_sha,
+        headRefOid: input.head_sha,
+        closingIssuesReferences: {
+          totalCount: 1,
+          nodes: [{
+            repository: { nameWithOwner: input.repository },
+            number: 10,
+            title: "ci: Add readiness gate",
+            body: issueBody,
+            issueType: { name: "Feature" },
+            parent: null,
+            subIssues: { nodes: [] },
+          }],
+        },
+        reviewThreads: {
+          pageInfo: { hasNextPage: false },
+          nodes: [],
+        },
+      },
+    },
+  };
+  fs.writeFileSync(fixtureFile, JSON.stringify(fixture));
+  const verify = (expected) => spawnSync(process.execPath, [
+    path.join(path.dirname(new URL(import.meta.url).pathname), "verify.mjs"),
+  ], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      GITHUB_REPOSITORY: input.repository,
+      PULL_REQUEST_NUMBER: String(input.number),
+      PR_READINESS_VERIFY_INPUT_FILE: fixtureFile,
+      EXPECTED_SNAPSHOT_SHA256: expected,
+      GITHUB_OUTPUT: outputFile,
+    },
+  });
+  assert.equal(verify(context.readiness.snapshot_sha256).status, 0);
+  assert.match(
+    fs.readFileSync(outputFile, "utf8"),
+    new RegExp(context.readiness.snapshot_sha256),
+  );
+  fixture.repository.pullRequest.body = `${input.body}\nchanged`;
+  fs.writeFileSync(fixtureFile, JSON.stringify(fixture));
+  assert.notEqual(verify(context.readiness.snapshot_sha256).status, 0);
+} finally {
+  fs.rmSync(temporary, { recursive: true, force: true });
+}
 
 process.stdout.write("pr-readiness tests passed\n");

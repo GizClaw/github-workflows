@@ -1022,10 +1022,35 @@ jobs:
       pull-requests: write
     outputs:
       failure_reason: >-
-        ${{ steps.publish.outputs.failure_reason
+        ${{ (steps.verify_identity.outcome == 'failure'
+              && 'PR or linked-Issue readiness identity changed before publication.')
+          || steps.publish.outputs.failure_reason
           || (steps.publish.outcome == 'failure' && 'GitHub could not publish the generated pull-request review.')
           || '' }}
     steps:
+      - name: Check out exact readiness identity verifier
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .openai-pr-readiness-workflow-source
+          sparse-checkout: |
+            .github/scripts/issue-review
+            .github/scripts/pr-readiness
+          persist-credentials: false
+
+      - name: Revalidate current PR readiness identity
+        id: verify_identity
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PULL_REQUEST_NUMBER: ${{ needs.resolve.outputs.number }}
+          REQUEST_COMMENT_ID: ${{ needs.resolve.outputs.request_comment_id }}
+          EXPECTED_SNAPSHOT_SHA256: >-
+            ${{ fromJSON(needs.review.outputs.readiness_evidence).snapshot_sha256 }}
+        run: >-
+          node
+          .openai-pr-readiness-workflow-source/.github/scripts/pr-readiness/verify.mjs
+
       - name: Publish native pull-request review
         id: publish
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8

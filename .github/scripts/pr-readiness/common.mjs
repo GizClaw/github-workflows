@@ -22,9 +22,12 @@ export function analyzePullRequest(input) {
     trigger_comment_id: input.trigger_comment_id == null
       ? null : String(input.trigger_comment_id),
   };
-  const linkedIssues = (input.linked_issues ?? []).map((issue) => (
-    analyzeIssue(issue, { implementationIssue: true })
-  ));
+  const linkedIssues = (input.linked_issues ?? [])
+    .map((issue) => analyzeIssue(issue, { implementationIssue: true }))
+    .sort((left, right) => (
+      left.snapshot.repository.localeCompare(right.snapshot.repository)
+      || left.snapshot.number - right.snapshot.number
+    ));
   const sameRepository = linkedIssues.filter(
     (issue) => issue.snapshot.repository.toLowerCase()
       === pullRequest.repository.toLowerCase(),
