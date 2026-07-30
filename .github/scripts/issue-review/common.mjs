@@ -8,6 +8,12 @@ export const REQUIRED_SECTIONS = Object.freeze([
   "Design",
   "Test And Acceptance Criteria",
 ]);
+export const TRACKING_SECTIONS = Object.freeze([
+  "Background",
+  "Goal",
+  "Sub-issues",
+  "Completion Criteria",
+]);
 export const PREFIXED_TITLE = /^[a-z][a-z0-9-]*(?:\/[a-z][a-z0-9-]*)*: \S.*$/;
 
 export function sha256(value) {
@@ -37,6 +43,23 @@ function markdownStructure(body) {
     if (heading) headings.push({ index, heading });
   }
   return { lines, headings, visibleLines };
+}
+
+function sectionText(structure, headingName) {
+  const heading = structure.headings.find(
+    (item) => item.heading === headingName,
+  );
+  if (!heading) return "";
+  const nextHeading = structure.headings.find(
+    (item) => item.index > heading.index,
+  );
+  return structure.visibleLines
+    .filter((item) => (
+      item.index > heading.index
+      && (!nextHeading || item.index < nextHeading.index)
+    ))
+    .map((item) => item.line)
+    .join("\n");
 }
 
 export function issueSnapshot(issue) {
@@ -131,39 +154,48 @@ export function analyzeIssue(issue, { implementationIssue = true } = {}) {
 
   const structure = markdownStructure(snapshot.body);
   const sections = structure.headings.map((item) => item.heading);
+  const expectedSections = snapshot.issue_type.toLowerCase() === "task"
+    ? TRACKING_SECTIONS
+    : REQUIRED_SECTIONS;
   if (
-    snapshot.issue_type.toLowerCase() !== "task"
-    && (
-    sections.length !== REQUIRED_SECTIONS.length
-    || sections.some((section, index) => section !== REQUIRED_SECTIONS[index])
-    )
+    sections.length !== expectedSections.length
+    || sections.some((section, index) => section !== expectedSections[index])
   ) {
     blockers.push(blocker(
       "invalid-section-contract",
-      `Issue must contain exactly these top-level sections in order: ${REQUIRED_SECTIONS.join(", ")}.`,
+      `Issue must contain exactly these top-level sections in order: ${expectedSections.join(", ")}.`,
     ));
   }
+  const goal = sectionText(structure, "Goal");
+  if (!/^### Non-goals\s*$/m.test(goal)) {
+    blockers.push(blocker(
+      "missing-non-goals",
+      "Issue Goal must contain a `### Non-goals` subsection.",
+    ));
+  }
+  if (snapshot.issue_type.toLowerCase() !== "task") {
+    const testAndAcceptance = sectionText(
+      structure,
+      "Test And Acceptance Criteria",
+    );
+    const acceptanceIndex = testAndAcceptance.search(
+      /^### Acceptance Criteria\s*$/m,
+    );
+    const validationIndex = testAndAcceptance.search(/^### Validation\s*$/m);
+    if (
+      acceptanceIndex < 0
+      || validationIndex < 0
+      || acceptanceIndex > validationIndex
+    ) {
+      blockers.push(blocker(
+        "invalid-test-and-acceptance-structure",
+        "Test And Acceptance Criteria must contain `### Acceptance Criteria` followed by `### Validation`.",
+      ));
+    }
+  }
 
-  const backgroundHeading = structure.headings.find(
-    (item) => item.heading === "Background",
-  );
-  const nextHeading = structure.headings.find(
-    (item) => backgroundHeading && item.index > backgroundHeading.index,
-  );
-  const background = !backgroundHeading
-    ? ""
-    : structure.visibleLines
-      .filter((item) => (
-        item.index > backgroundHeading.index
-        && (!nextHeading || item.index < nextHeading.index)
-      ))
-      .map((item) => item.line)
-      .join("\n");
-  for (
-    const label of snapshot.issue_type.toLowerCase() === "task"
-      ? []
-      : ["Parent", "Prerequisite of", "Follow up to"]
-  ) {
+  const background = sectionText(structure, "Background");
+  for (const label of ["Parent", "Prerequisite of", "Follow up to"]) {
     if (new RegExp(`^${label}:`, "m").test(background)) {
       blockers.push(blocker(
         "invalid-background-relationship",
@@ -172,8 +204,7 @@ export function analyzeIssue(issue, { implementationIssue = true } = {}) {
     }
   }
   if (
-    snapshot.issue_type.toLowerCase() !== "task"
-    && /^- (?:Prerequisite of|Follow up to):\s+#\d+\s*$/m.test(background)
+    /^- (?:Prerequisite of|Follow up to):\s+#\d+\s*$/m.test(background)
   ) {
     blockers.push(blocker(
       "invalid-background-relationship",

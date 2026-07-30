@@ -51,11 +51,12 @@ superseded snapshots only after a replacement upload succeeds.
   each included child is checked in turn; already-closed children are ignored.
   `OpenAI Issue Review` checks every linked Issue independently and aggregates
   their format, trusted-base repository fit, and implementation-readiness
-  verdict. It applies the `write-issue` section and relationship contract and
-  the `review-issue` design-completeness gates without modifying the Issue or
-  inventing missing decisions. `OpenAI Code Review` checks only code findings
-  and Issue-plan conformance. Configure all three names as required checks when
-  every stage must block merging.
+  verdict. It applies the appropriate Tracking or Implementation section
+  contract, explicit Non-goals, relationship formatting, acceptance/validation
+  separation, and the `review-issue` design-completeness gates without
+  modifying the Issue or inventing missing decisions. `OpenAI Code Review`
+  checks only code findings and Issue-plan conformance. Configure all three
+  names as required checks when every stage must block merging.
 - An execution failure publishes a titled PR comment with the specific failure
   reason and a link to the Actions run instead of leaving only a reaction.
 - Every published review reports the Codex review time, input, cached-input,

@@ -5,12 +5,31 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import { REQUIRED_SECTIONS } from "../issue-review/common.mjs";
 import { analyzePullRequest, evaluateReadiness } from "./common.mjs";
 
-const issueBody = REQUIRED_SECTIONS.map((section) => (
-  `## ${section}\n\n${section} details.`
-)).join("\n\n");
+const issueBody = [
+  "## Background\n\nBackground details.",
+  "## Goal\n\nGoal details.\n\n### Non-goals\n\nNo additional scope.",
+  "## Code Changes Tree\n\nREADME.md",
+  "## Design\n\nDesign details.",
+  [
+    "## Test And Acceptance Criteria",
+    "",
+    "### Acceptance Criteria",
+    "",
+    "Observable close condition.",
+    "",
+    "### Validation",
+    "",
+    "Run the focused test.",
+  ].join("\n"),
+].join("\n\n");
+const taskBody = [
+  "## Background\n\nBackground details.",
+  "## Goal\n\nGoal details.\n\n### Non-goals\n\nNo additional scope.",
+  "## Sub-issues\n\n- #20",
+  "## Completion Criteria\n\nAll native children are closed.",
+].join("\n\n");
 const input = {
   repository: "GizClaw/example",
   number: 11,
@@ -71,7 +90,7 @@ assert.deepEqual(blockerCodes(analyzePullRequest({
   linked_issues: [{
     ...input.linked_issues[0],
     issue_type: "Task",
-    body: "",
+    body: taskBody,
     sub_issue_count: 1,
     sub_issues: [{
       repository: input.repository,
@@ -87,7 +106,7 @@ assert.deepEqual(blockerCodes(analyzePullRequest({
       ...input.linked_issues[0],
       number: 11,
       issue_type: "Task",
-      body: "",
+      body: taskBody,
       sub_issue_count: 1,
       sub_issues: [{
         repository: input.repository,
@@ -108,7 +127,7 @@ assert.deepEqual(blockerCodes(analyzePullRequest({
     ...input.linked_issues[0],
     number: 11,
     issue_type: "Task",
-    body: "",
+    body: taskBody,
     sub_issue_count: 1,
     sub_issues: [{
       repository: input.repository,
@@ -124,7 +143,7 @@ assert.deepEqual(blockerCodes(analyzePullRequest({
       ...input.linked_issues[0],
       number: 11,
       issue_type: "Task",
-      body: "",
+      body: taskBody,
       sub_issue_count: 1,
       sub_issues: [{
         repository: input.repository,
@@ -147,7 +166,7 @@ assert.deepEqual(blockerCodes(analyzePullRequest({
       ...input.linked_issues[0],
       number: 11,
       issue_type: "Task",
-      body: "",
+      body: taskBody,
       sub_issue_count: 1,
       sub_issues: [{
         repository: input.repository,
