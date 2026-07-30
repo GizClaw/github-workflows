@@ -180,6 +180,10 @@ complete code diff. A workflow-source, runtime, model, or trusted-policy change
 intentionally invalidates incompatible session evidence and safely starts the
 affected review stages again.
 
+When editing PR metadata, preserve the native closing-Issue relationship.
+Removing or changing that relationship changes the plan-conformance identity
+and intentionally invalidates the affected Code evidence.
+
 1. Copy `openai-pr-review-dispatch.yml` into the caller repository's default
    branch.
 2. Replace local reusable-workflow paths with a protected `v1` reference or an
