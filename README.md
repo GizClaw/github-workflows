@@ -161,6 +161,25 @@ second workflow.
 
 ## Rollout
 
+### Live validation matrix
+
+Use this matrix after the caller is present on the repository's default branch.
+Every run recreates the three fixed Checks on the exact current PR head; the
+stage modes below describe model work and evidence reuse inside that run.
+
+| Trigger | PR evidence | Issue evidence | Code evidence | Expected Check publication |
+| --- | --- | --- | --- | --- |
+| Open a ready PR | `full` | `full` for every linked Issue | `full` complete diff | All three fixed Checks |
+| Edit only the PR body | `incremental` field diff | `reused` | `reused` | All three, with only PR metadata re-reviewed |
+| Edit one linked Issue | `reused` | `incremental` for that Issue; others `reused` | `incremental` plan-conformance aggregation with no repeated complete code diff | All three, with Issue and Code verdicts revalidated |
+| Push a descendant commit | `reused` | `reused` | `incremental` from the last completed head | All three on the new head |
+| Rerun an unchanged head | deterministic checks plus `reused` | `reused` | `reused` | All three with zero model tokens |
+
+An Issue edit revalidates plan conformance without resending an unchanged
+complete code diff. A workflow-source, runtime, model, or trusted-policy change
+intentionally invalidates incompatible session evidence and safely starts the
+affected review stages again.
+
 1. Copy `openai-pr-review-dispatch.yml` into the caller repository's default
    branch.
 2. Replace local reusable-workflow paths with a protected `v1` reference or an
