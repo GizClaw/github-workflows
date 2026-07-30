@@ -54,13 +54,15 @@ const workflowSource = fs.readFileSync(
   ),
   "utf8",
 );
-assert.match(workflowSource, /const conclusion = findingCount === 0/);
+assert.match(workflowSource, /const codeConclusion = findingCount === 0/);
 assert.match(workflowSource, /'# ✅ Conclusion: PASS'/);
 assert.match(workflowSource, /`# ❌ Conclusion: FAIL \(\$\{findingCount\} actionable finding/);
 assert.match(
   workflowSource,
-  /let body = \[\n\s+conclusion,\n\s+'## 🤖 OpenAI PR review'/,
+  /let body = \[\n\s+conclusion,\n\s+'## 🤖 OpenAI PR review',\n\s+codeConclusion,/,
 );
+assert.match(workflowSource, /name: 'OpenAI PR readiness'/);
+assert.match(workflowSource, /READINESS_VERDICT/);
 
 assert.deepEqual(
   usageDelta(
@@ -132,6 +134,7 @@ try {
       SESSION_KEY: "repo:1:pr:2:v2",
       MAX_DIFF_BYTES: "1000000",
       CHUNK_TARGET_BYTES: "600",
+      READINESS_CONTEXT_SHA256: "context-v1",
     },
   });
   assert.equal(result.status, 0, result.stderr);
@@ -172,6 +175,7 @@ try {
       SESSION_KEY: "repo:1:pr:2:v2",
       MAX_DIFF_BYTES: "1000000",
       CHUNK_TARGET_BYTES: "600",
+      READINESS_CONTEXT_SHA256: "context-v1",
     },
   });
   assert.equal(restored.status, 0, restored.stderr);
@@ -206,6 +210,7 @@ try {
       SESSION_KEY: "repo:1:pr:2:v2",
       MAX_DIFF_BYTES: "1000000",
       CHUNK_TARGET_BYTES: "600",
+      READINESS_CONTEXT_SHA256: "context-v1",
     },
   });
   assert.equal(incremental.status, 0, incremental.stderr);
@@ -263,7 +268,8 @@ fs.appendFileSync(sessionFile, JSON.stringify({
 }) + "\\n");
 fs.writeFileSync(outputFile, JSON.stringify({
   summary: "Fake review complete.",
-  findings: []
+  findings: [],
+  readiness: { verdict: "pass", blockers: [] }
 }));
 `, { mode: 0o755 });
   const latestGeneration = updatedLedger.generations.at(-1);

@@ -1,0 +1,216 @@
+name: OpenAI Issue readiness review
+
+on:
+  workflow_call:
+    inputs:
+      issue_number:
+        description: Issue number to review.
+        required: true
+        type: number
+      model:
+        description: OpenAI model used by Codex.
+        required: false
+        default: gpt-5.6-terra
+        type: string
+      effort:
+        description: Reasoning effort supplied to Codex.
+        required: false
+        default: medium
+        type: string
+      codex-version:
+        description: Exact Codex CLI version.
+        required: false
+        default: 0.145.0
+        type: string
+      issue-review-instructions:
+        description: Additional trusted caller-owned Issue review policy.
+        required: false
+        default: Require a concrete, internally consistent implementation design with observable acceptance criteria.
+        type: string
+    secrets:
+      OPENAI_API_KEY:
+        description: OpenAI API key supplied explicitly by the caller.
+        required: true
+    outputs:
+      verdict:
+        description: PASS or FAIL Issue readiness verdict.
+        value: ${{ jobs.review.outputs.verdict }}
+      review:
+        description: Structured Issue readiness result.
+        value: ${{ jobs.review.outputs.review }}
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    outputs:
+      verdict: ${{ steps.run.outputs.verdict }}
+      review: ${{ steps.run.outputs.review }}
+    steps:
+      - name: Resolve trusted default branch and untrusted Issue
+        id: context
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          ISSUE_INPUT_FILE: ${{ runner.temp }}/openai-issue-input.json
+        with:
+          script: |
+            const fs = require('node:fs');
+            const repository = await github.graphql(`
+              query($owner: String!, $repo: String!, $number: Int!) {
+                repository(owner: $owner, name: $repo) {
+                  nameWithOwner
+                  defaultBranchRef { name target { oid } }
+                  issue(number: $number) {
+                    number
+                    title
+                    body
+                    updatedAt
+                    issueType { name }
+                    parent { number }
+                    subIssues(first: 100) { nodes { number } }
+                  }
+                }
+              }
+            `, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              number: Number(${{ inputs.issue_number }}),
+            });
+            if (!repository.issue) throw new Error('Issue was not found');
+            const issue = repository.issue;
+            fs.writeFileSync(process.env.ISSUE_INPUT_FILE, JSON.stringify({
+              issue: {
+                repository: repository.nameWithOwner,
+                number: issue.number,
+                title: String(issue.title).slice(0, 500),
+                body: String(issue.body).slice(0, 80_000),
+                issue_type: issue.issueType?.name || '',
+                parent_number: issue.parent?.number ?? null,
+                sub_issue_numbers: issue.subIssues.nodes.map((item) => item.number),
+              },
+              updated_at: issue.updatedAt,
+              trusted_policy: ${{ toJSON(inputs.issue-review-instructions) }},
+            }), 'utf8');
+            core.setOutput('default_branch', repository.defaultBranchRef.name);
+            core.setOutput('default_sha', repository.defaultBranchRef.target.oid);
+            core.setOutput('updated_at', issue.updatedAt);
+            core.exportVariable('ISSUE_INPUT_FILE', process.env.ISSUE_INPUT_FILE);
+            core.exportVariable(
+              'ISSUE_CONTEXT_FILE',
+              `${process.env.RUNNER_TEMP}/openai-issue-context.json`,
+            );
+            core.exportVariable(
+              'ISSUE_REVIEW_OUTPUT_FILE',
+              `${process.env.RUNNER_TEMP}/openai-issue-review.json`,
+            );
+            core.exportVariable(
+              'CODEX_HOME',
+              `${process.env.RUNNER_TEMP}/openai-issue-codex-home`,
+            );
+
+      - name: Check out trusted caller default branch
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ steps.context.outputs.default_sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Check out exact reusable Issue reviewer
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .openai-issue-review-workflow-source
+          sparse-checkout: .github/scripts/issue-review
+          persist-credentials: false
+
+      - name: Prepare deterministic Issue context
+        id: prepare
+        run: >-
+          node
+          .openai-issue-review-workflow-source/.github/scripts/issue-review/prepare.mjs
+
+      - name: Require OpenAI API key
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          if [ -z "$OPENAI_API_KEY" ]; then
+            echo "::error title=Missing OPENAI_API_KEY::Pass the secret explicitly."
+            exit 1
+          fi
+
+      - name: Bootstrap Codex and protected API proxy
+        uses: openai/codex-action@52fe01ec70a42f454c9d2ebd47598f9fd6893d56 # v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          allow-users: '*'
+          codex-version: ${{ inputs.codex-version }}
+          codex-home: ${{ env.CODEX_HOME }}
+          permission-profile: :read-only
+          safety-strategy: drop-sudo
+
+      - name: Review Issue readiness
+        id: run
+        env:
+          REPOSITORY_DIR: ${{ github.workspace }}
+          ISSUE_REVIEW_OUTPUT_SCHEMA: >-
+            ${{ github.workspace }}/.openai-issue-review-workflow-source/.github/scripts/issue-review/review-output-schema.json
+          MODEL: ${{ inputs.model }}
+          EFFORT: ${{ inputs.effort }}
+          ISSUE_REVIEW_INSTRUCTIONS: ${{ inputs.issue-review-instructions }}
+        run: >-
+          node
+          .openai-issue-review-workflow-source/.github/scripts/issue-review/run.mjs
+
+      - name: Publish current Issue readiness
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          REVIEW: ${{ steps.run.outputs.review }}
+          REVIEWED_UPDATED_AT: ${{ steps.context.outputs.updated_at }}
+          ISSUE_SNAPSHOT_SHA256: ${{ steps.prepare.outputs.issue_snapshot_sha256 }}
+          TRUSTED_POLICY_SHA256: ${{ steps.prepare.outputs.trusted_policy_sha256 }}
+          WORKFLOW_SOURCE_SHA: ${{ job.workflow_sha }}
+          MODEL: ${{ inputs.model }}
+          EFFORT: ${{ inputs.effort }}
+        with:
+          script: |
+            const { data: current } = await github.rest.issues.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: Number(${{ inputs.issue_number }}),
+            });
+            if (current.updated_at !== process.env.REVIEWED_UPDATED_AT) {
+              throw new Error('Issue changed while readiness review was running');
+            }
+            const review = JSON.parse(process.env.REVIEW);
+            const safe = (value, length = 12_000) => String(value)
+              .replaceAll('@', '@\u200b')
+              .slice(0, length);
+            const blockers = review.blockers.length === 0
+              ? 'No implementation-readiness blockers.'
+              : [
+                  '### Blockers',
+                  ...review.blockers.map((item) => (
+                    `- **${safe(item.title, 240)}** — ${safe(item.body)}`
+                  )),
+                ].join('\n');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: Number(${{ inputs.issue_number }}),
+              body: [
+                '<!-- openai-issue-readiness:v1 -->',
+                review.verdict === 'pass'
+                  ? '# ✅ Issue readiness: PASS'
+                  : '# ❌ Issue readiness: FAIL',
+                safe(review.summary),
+                blockers,
+                `Issue snapshot: \`${process.env.ISSUE_SNAPSHOT_SHA256}\``,
+                `Trusted policy: \`${process.env.TRUSTED_POLICY_SHA256}\``,
+                `Workflow source: \`${process.env.WORKFLOW_SOURCE_SHA}\``,
+                `Model: \`${process.env.MODEL}\``,
+                `Reasoning effort: \`${process.env.EFFORT}\``,
+              ].join('\n\n'),
+            });

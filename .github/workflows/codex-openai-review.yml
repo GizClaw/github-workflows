@@ -33,6 +33,16 @@ on:
         required: false
         default: Review only the pull request diff. Report actionable correctness, security, regression, and test-coverage findings.
         type: string
+      issue-review-instructions:
+        description: Trusted caller policy for deciding whether linked Issues are implementation-ready.
+        required: false
+        default: Require an implementation-ready Issue with concrete scope, design, file tree, and observable acceptance criteria.
+        type: string
+      pr-readiness-instructions:
+        description: Trusted caller policy for PR metadata, Issue-plan conformance, and blocking findings.
+        required: false
+        default: Require valid PR metadata, native implementation-Issue linkage, Issue-plan conformance, and no actionable findings.
+        type: string
       pull_request_number:
         description: Optional pull request number for a workflow_dispatch caller.
         required: false
@@ -56,6 +66,9 @@ on:
       review:
         description: Structured JSON result produced by the OpenAI review job.
         value: ${{ jobs.review.outputs.review }}
+      readiness:
+        description: Structured PASS/FAIL readiness evidence for the reviewed PR revision.
+        value: ${{ jobs.review.outputs.readiness_evidence }}
 
 jobs:
   resolve:
@@ -77,9 +90,12 @@ jobs:
         with:
           script: |
             const event = context.eventName;
+            const requestedNumber = Number(process.env.REQUESTED_PULL_NUMBER);
             let number;
             let requestCommentId = '';
-            if (event === 'pull_request' || event === 'pull_request_target') {
+            if (Number.isSafeInteger(requestedNumber) && requestedNumber > 0) {
+              number = requestedNumber;
+            } else if (event === 'pull_request' || event === 'pull_request_target') {
               number = context.payload.pull_request.number;
             } else if (event === 'issue_comment') {
               if (!context.payload.issue.pull_request) return core.setOutput('eligible', 'false');
@@ -99,7 +115,9 @@ jobs:
               'pull_request_target',
               'issue_comment',
               'workflow_dispatch',
-            ].includes(event);
+            ].includes(event) || (
+              Number.isSafeInteger(requestedNumber) && requestedNumber > 0
+            );
             const eligible = pr.state === 'open'
               && !pr.draft
               && (sameRepository || trustedBaseEvent);
@@ -119,6 +137,7 @@ jobs:
       pull-requests: write
     outputs:
       check_run_id: ${{ steps.status.outputs.check_run_id }}
+      readiness_check_run_id: ${{ steps.status.outputs.readiness_check_run_id }}
       request_reaction_id: ${{ steps.status.outputs.request_reaction_id }}
       failure_reason: ${{ steps.status.outputs.failure_reason }}
     steps:
@@ -158,6 +177,32 @@ jobs:
                 },
               });
               core.setOutput('check_run_id', String(checkRun.id));
+              const { data: readinessCheckRun } = await github.rest.checks.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                name: 'OpenAI PR readiness',
+                head_sha: process.env.PR_HEAD_SHA,
+                status: 'in_progress',
+                started_at: new Date().toISOString(),
+                details_url: process.env.DETAILS_URL,
+                external_id: [
+                  'readiness',
+                  process.env.RUN_ID,
+                  process.env.RUN_ATTEMPT,
+                  process.env.PULL_REQUEST_NUMBER,
+                ].join(':'),
+                output: {
+                  title: 'PR readiness review in progress',
+                  summary: [
+                    'OpenAI is validating PR metadata, linked Issue design, plan conformance, and code findings.',
+                    `[Open the Actions run](${process.env.DETAILS_URL}).`,
+                  ].join(' '),
+                },
+              });
+              core.setOutput(
+                'readiness_check_run_id',
+                String(readinessCheckRun.id),
+              );
 
               if (Number.isSafeInteger(commentId) && commentId > 0) {
                 const { data: reaction } = await github.rest.reactions.createForIssueComment({
@@ -190,6 +235,8 @@ jobs:
       pull-requests: write
     outputs:
       review: ${{ steps.run_review.outputs.review }}
+      readiness_verdict: ${{ steps.evaluate_readiness.outputs.verdict }}
+      readiness_evidence: ${{ steps.evaluate_readiness.outputs.evidence }}
       duration_seconds: ${{ steps.run_review.outputs.duration_seconds }}
       usage_available: ${{ steps.run_review.outputs.usage_available }}
       input_tokens: ${{ steps.run_review.outputs.input_tokens }}
@@ -218,6 +265,7 @@ jobs:
           || (steps.codex_bootstrap.outcome == 'failure' && 'Could not start the protected Codex review runtime.')
           || steps.run_review.outputs.failure_reason
           || (steps.run_review.outcome == 'failure' && 'Codex failed before it completed the requested diff generation.')
+          || (steps.evaluate_readiness.outcome == 'failure' && 'Could not produce structured PR readiness evidence.')
           || '' }}
     env:
       PULL_REQUEST_NUMBER: ${{ needs.resolve.outputs.number }}
@@ -253,7 +301,10 @@ jobs:
           repository: ${{ job.workflow_repository }}
           ref: ${{ job.workflow_sha }}
           path: .openai-pr-review-workflow-source
-          sparse-checkout: .github/scripts/pr-review
+          sparse-checkout: |
+            .github/scripts/issue-review
+            .github/scripts/pr-readiness
+            .github/scripts/pr-review
           persist-credentials: false
 
       - name: Fetch exact pull-request objects without checking out its code
@@ -305,16 +356,89 @@ jobs:
             const fs = require('node:fs');
             const clip = (value, length) => String(value ?? '').slice(0, length);
             try {
-              const { data: pullRequest } = await github.rest.pulls.get({
-                owner: context.repo.owner, repo: context.repo.repo,
-                pull_number: Number(process.env.PULL_REQUEST_NUMBER),
+              const data = await github.graphql(`
+                query(
+                  $owner: String!,
+                  $repo: String!,
+                  $number: Int!
+                ) {
+                  repository(owner: $owner, name: $repo) {
+                    nameWithOwner
+                    pullRequest(number: $number) {
+                      title
+                      body
+                      closingIssuesReferences(first: 20) {
+                        totalCount
+                        nodes {
+                          repository { nameWithOwner }
+                          number
+                          title
+                          body
+                          issueType { name }
+                          parent { number }
+                          subIssues(first: 100) {
+                            nodes { number }
+                          }
+                        }
+                      }
+                      reviewThreads(first: 100) {
+                        pageInfo { hasNextPage }
+                        nodes {
+                          isResolved
+                          comments(first: 1) {
+                            nodes {
+                              author { login }
+                              body
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              `, {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                number: Number(process.env.PULL_REQUEST_NUMBER),
               });
+              const pullRequest = data.repository.pullRequest;
+              if (!pullRequest) throw new Error('Pull request was not found');
               const comments = await github.paginate(github.rest.issues.listComments, {
                 owner: context.repo.owner, repo: context.repo.repo,
                 issue_number: Number(process.env.PULL_REQUEST_NUMBER), per_page: 100,
               });
               const discussion = {
-                pull_request: { title: clip(pullRequest.title, 500), body: clip(pullRequest.body, 6_000) },
+                repository: data.repository.nameWithOwner,
+                pull_request: {
+                  title: clip(pullRequest.title, 500),
+                  body: clip(pullRequest.body, 80_000),
+                },
+                linked_issue_count:
+                  pullRequest.closingIssuesReferences.totalCount,
+                linked_issues: pullRequest.closingIssuesReferences.nodes
+                  .slice(0, 10)
+                  .map((issue) => ({
+                    repository: issue.repository.nameWithOwner,
+                    number: issue.number,
+                    title: clip(issue.title, 500),
+                    body: clip(issue.body, 80_000),
+                    issue_type: issue.issueType?.name || '',
+                    parent_number: issue.parent?.number ?? null,
+                    sub_issue_numbers: issue.subIssues.nodes.map(
+                      (subIssue) => subIssue.number,
+                    ),
+                  })),
+                unresolved_openai_thread_count: pullRequest.reviewThreads.nodes
+                  .filter((thread) => (
+                    !thread.isResolved
+                    && thread.comments.nodes[0]?.author?.login
+                      === 'github-actions[bot]'
+                    && /Badge\]\(https:\/\/img\.shields\.io\/badge\/P[0-3]-/
+                      .test(thread.comments.nodes[0]?.body || '')
+                  ))
+                  .length,
+                review_threads_truncated:
+                  pullRequest.reviewThreads.pageInfo.hasNextPage,
                 trigger_comment_id: process.env.REQUEST_COMMENT_ID || null,
                 comments: comments.slice(-20).map((comment) => ({
                   author: comment.user.login, association: comment.author_association,
@@ -331,6 +455,16 @@ jobs:
               core.setOutput('failure_reason', reason);
               core.setFailed(reason);
             }
+
+      - name: Prepare deterministic PR and Issue readiness context
+        id: prepare_readiness
+        env:
+          PR_READINESS_INSTRUCTIONS: >-
+            ${{ inputs.issue-review-instructions }}
+            ${{ inputs.pr-readiness-instructions }}
+        run: >-
+          node
+          "$REVIEWER_SOURCE_DIR/.github/scripts/pr-readiness/prepare.mjs"
 
       - name: Require OpenAI API key
         id: api_key
@@ -399,8 +533,12 @@ jobs:
           EXPECTED_CODEX_VERSION: ${{ inputs.codex-version }}
           EXPECTED_MODEL: ${{ inputs.model }}
           EXPECTED_EFFORT: ${{ inputs.effort }}
+          EXPECTED_WORKFLOW_SOURCE_SHA: ${{ job.workflow_sha }}
           REPOSITORY_ID: ${{ github.repository_id }}
-          REVIEW_INSTRUCTIONS: ${{ inputs.review-instructions }}
+          REVIEW_INSTRUCTIONS: >-
+            ${{ inputs.review-instructions }}
+            ${{ inputs.issue-review-instructions }}
+            ${{ inputs.pr-readiness-instructions }}
         run: |
           node <<'NODE'
           const crypto = require('node:crypto');
@@ -467,6 +605,7 @@ jobs:
               model: process.env.EXPECTED_MODEL,
               effort: process.env.EXPECTED_EFFORT,
               codex_version: process.env.EXPECTED_CODEX_VERSION,
+              workflow_source_sha: process.env.EXPECTED_WORKFLOW_SOURCE_SHA,
               review_instructions_sha256: crypto
                 .createHash('sha256')
                 .update(process.env.REVIEW_INSTRUCTIONS)
@@ -545,6 +684,7 @@ jobs:
           REPOSITORY_DIR: ${{ env.PR_DIFF_REPOSITORY }}
           MAX_DIFF_BYTES: ${{ inputs.max-diff-bytes }}
           CHUNK_TARGET_BYTES: ${{ inputs.chunk-target-bytes }}
+          READINESS_CONTEXT_SHA256: ${{ steps.prepare_readiness.outputs.context_sha256 }}
         run: node "$REVIEWER_SOURCE_DIR/.github/scripts/pr-review/prepare.mjs"
 
       - name: Remove fetched pull-request Git objects
@@ -582,8 +722,24 @@ jobs:
           RESUMED_SESSION_ID: ${{ steps.restore_session.outputs.session_id }}
           MODEL: ${{ inputs.model }}
           EFFORT: ${{ inputs.effort }}
-          REVIEW_INSTRUCTIONS: ${{ inputs.review-instructions }}
+          REVIEW_INSTRUCTIONS: >-
+            ${{ inputs.review-instructions }}
+            ${{ inputs.issue-review-instructions }}
+            ${{ inputs.pr-readiness-instructions }}
         run: node "$REVIEWER_SOURCE_DIR/.github/scripts/pr-review/run.mjs"
+
+      - name: Evaluate structured PR readiness
+        id: evaluate_readiness
+        if: steps.run_review.outcome == 'success'
+        continue-on-error: true
+        env:
+          REVIEW: ${{ steps.run_review.outputs.review }}
+          WORKFLOW_SOURCE_SHA: ${{ job.workflow_sha }}
+          MODEL: ${{ inputs.model }}
+          EFFORT: ${{ inputs.effort }}
+        run: >-
+          node
+          "$REVIEWER_SOURCE_DIR/.github/scripts/pr-readiness/evaluate.mjs"
 
       - name: Confirm PR head before saving session
         id: session_head
@@ -610,7 +766,11 @@ jobs:
           MODEL: ${{ inputs.model }}
           EFFORT: ${{ inputs.effort }}
           REPOSITORY_ID: ${{ github.repository_id }}
-          REVIEW_INSTRUCTIONS: ${{ inputs.review-instructions }}
+          WORKFLOW_SOURCE_SHA: ${{ job.workflow_sha }}
+          REVIEW_INSTRUCTIONS: >-
+            ${{ inputs.review-instructions }}
+            ${{ inputs.issue-review-instructions }}
+            ${{ inputs.pr-readiness-instructions }}
           PREVIOUS_ARTIFACT_ID: ${{ steps.restore_session.outputs.previous_artifact_id }}
           RESUMED_SESSION_ID: ${{ steps.restore_session.outputs.session_id }}
           GENERATED_SESSION_ID: ${{ steps.run_review.outputs.session_id }}
@@ -760,6 +920,7 @@ jobs:
             model: process.env.MODEL,
             effort: process.env.EFFORT,
             codex_version: process.env.CODEX_VERSION,
+            workflow_source_sha: process.env.WORKFLOW_SOURCE_SHA,
             review_instructions_sha256: crypto
               .createHash('sha256')
               .update(process.env.REVIEW_INSTRUCTIONS)
@@ -841,9 +1002,13 @@ jobs:
             }
 
       - name: Fail after saving an incomplete review checkpoint
-        if: steps.run_review.outcome == 'failure'
+        if: >-
+          steps.run_review.outcome == 'failure'
+          || steps.evaluate_readiness.outcome == 'failure'
         env:
-          FAILURE_REASON: ${{ steps.run_review.outputs.failure_reason }}
+          FAILURE_REASON: >-
+            ${{ steps.run_review.outputs.failure_reason
+              || 'Could not produce structured PR readiness evidence.' }}
         run: |
           echo "::error title=OpenAI PR review failed::$FAILURE_REASON"
           exit 1
@@ -866,6 +1031,7 @@ jobs:
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         env:
           REVIEW: ${{ needs.review.outputs.review }}
+          READINESS_EVIDENCE: ${{ needs.review.outputs.readiness_evidence }}
           MODEL: ${{ inputs.model }}
           EFFORT: ${{ inputs.effort }}
           DURATION_SECONDS: ${{ needs.review.outputs.duration_seconds }}
@@ -893,6 +1059,7 @@ jobs:
             const maxCommentLength = 60_000;
             const maxFindingLength = 12_000;
             const review = JSON.parse(process.env.REVIEW);
+            const readiness = JSON.parse(process.env.READINESS_EVIDENCE);
             const count = (value) => Number(value || 0).toLocaleString('en-US');
             const duration = (value) => {
               const seconds = Math.max(0, Number(value || 0));
@@ -957,9 +1124,27 @@ jobs:
                   ].join('\n')),
                 ].join('\n\n');
             const findingCount = inlineFindings.length + summaryFindings.length;
-            const conclusion = findingCount === 0
+            const codeConclusion = findingCount === 0
               ? '# ✅ Conclusion: PASS'
               : `# ❌ Conclusion: FAIL (${findingCount} actionable finding${findingCount === 1 ? '' : 's'} found)`;
+            const conclusion = readiness.verdict === 'pass'
+              ? '# ✅ PR readiness: PASS'
+              : `# ❌ PR readiness: FAIL (${readiness.blockers.length} blocker${readiness.blockers.length === 1 ? '' : 's'})`;
+            const readinessDetails = [
+              '## Issue-led readiness',
+              `**PR contract:** ${code(readiness.stage_verdicts.deterministic.toUpperCase())}`,
+              `**Issue design and plan conformance:** ${code(readiness.stage_verdicts.issue_and_plan.toUpperCase())}`,
+              `**Code review:** ${code(readiness.stage_verdicts.code_review.toUpperCase())}`,
+              `**Evidence:** ${code(readiness.snapshot_sha256)}`,
+              readiness.blockers.length === 0
+                ? 'No configured readiness blockers.'
+                : [
+                    '### Readiness blockers',
+                    ...readiness.blockers.slice(0, 25).map((blocker) => (
+                      `- ${code(blocker.source)} ${String(blocker.message).slice(0, 2_000)}`
+                    )),
+                  ].join('\n'),
+            ].join('\n\n');
             let usageDetails = '';
             try {
               const usageData = JSON.parse(process.env.USAGE_JSON || '{}');
@@ -1038,6 +1223,7 @@ jobs:
             let body = [
               conclusion,
               '## 🤖 OpenAI PR review',
+              codeConclusion,
               `**Reviewed commit:** ${code(process.env.PR_HEAD_SHA.slice(0, 10))}`,
               `**Reviewed range:** ${code(`${process.env.REVIEW_FROM_SHA.slice(0, 10)}..${process.env.PR_HEAD_SHA.slice(0, 10)}`)}`,
               `**Review mode:** ${code(process.env.REVIEW_MODE)}`,
@@ -1048,6 +1234,7 @@ jobs:
               `**Reasoning effort:** ${code(process.env.EFFORT)}`,
               ...usage,
               usageDetails,
+              readinessDetails,
               String(review.summary).slice(0, 12_000),
               findingCount === 0
                 ? 'No actionable findings.'
@@ -1079,6 +1266,9 @@ jobs:
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         env:
           CHECK_RUN_ID: ${{ needs.start.outputs.check_run_id }}
+          READINESS_CHECK_RUN_ID: ${{ needs.start.outputs.readiness_check_run_id }}
+          READINESS_VERDICT: ${{ needs.review.outputs.readiness_verdict }}
+          READINESS_EVIDENCE: ${{ needs.review.outputs.readiness_evidence }}
           PULL_REQUEST_NUMBER: ${{ needs.resolve.outputs.number }}
           REQUEST_COMMENT_ID: ${{ needs.resolve.outputs.request_comment_id }}
           REQUEST_REACTION_ID: ${{ needs.start.outputs.request_reaction_id }}
@@ -1140,6 +1330,60 @@ jobs:
                     failure: 'Review completed with an error',
                   }[conclusion],
                   summary,
+                },
+              });
+            }
+
+            const readinessCheckRunId = Number(
+              process.env.READINESS_CHECK_RUN_ID,
+            );
+            if (
+              Number.isSafeInteger(readinessCheckRunId)
+              && readinessCheckRunId > 0
+            ) {
+              const readinessConclusion = cancelled
+                ? 'cancelled'
+                : succeeded && process.env.READINESS_VERDICT === 'pass'
+                  ? 'success'
+                  : 'failure';
+              let readiness;
+              try {
+                readiness = JSON.parse(process.env.READINESS_EVIDENCE || '{}');
+              } catch {
+                readiness = {};
+              }
+              const blockers = Array.isArray(readiness.blockers)
+                ? readiness.blockers
+                : [];
+              const readinessSummary = [
+                readinessConclusion === 'success'
+                  ? 'No configured automated PR readiness blockers were found. This is not a pull-request approval.'
+                  : readinessConclusion === 'cancelled'
+                    ? 'This readiness review was superseded or cancelled.'
+                    : blockers.length > 0
+                      ? [
+                          `Found ${blockers.length} readiness blocker${blockers.length === 1 ? '' : 's'}:`,
+                          ...blockers.slice(0, 25).map((blocker) => (
+                            `- **${String(blocker.source).slice(0, 80)}:** ${String(blocker.message).replaceAll('@', '@\u200b').slice(0, 1_000)}`
+                          )),
+                        ].join('\n')
+                      : `Readiness could not pass. ${safeFailureReason}`,
+                `[Open the Actions run](${process.env.DETAILS_URL}).`,
+              ].join('\n\n');
+              await github.rest.checks.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                check_run_id: readinessCheckRunId,
+                status: 'completed',
+                conclusion: readinessConclusion,
+                completed_at: new Date().toISOString(),
+                output: {
+                  title: {
+                    success: 'PR readiness passed',
+                    cancelled: 'PR readiness cancelled',
+                    failure: 'PR readiness failed',
+                  }[readinessConclusion],
+                  summary: readinessSummary.slice(0, 65_000),
                 },
               });
             }
