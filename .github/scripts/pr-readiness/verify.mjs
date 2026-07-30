@@ -11,10 +11,14 @@ const required = (name) => {
 
 async function fetchPullRequest() {
   if (process.env.PR_READINESS_VERIFY_INPUT_FILE) {
-    return JSON.parse(fs.readFileSync(
+    const payload = JSON.parse(fs.readFileSync(
       process.env.PR_READINESS_VERIFY_INPUT_FILE,
       "utf8",
     ));
+    if (payload.errors?.length) {
+      throw new Error(`GitHub GraphQL failed: ${payload.errors[0].message}`);
+    }
+    return payload.data ?? payload;
   }
   const [owner, repo] = required("GITHUB_REPOSITORY").split("/");
   const response = await fetch(
@@ -129,4 +133,3 @@ if (process.env.GITHUB_OUTPUT) {
     `snapshot_sha256=${current.snapshot_sha256}\n`,
   );
 }
-
