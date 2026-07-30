@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 
-export const ISSUE_REVIEW_SCHEMA_VERSION = 1;
+export const ISSUE_REVIEW_SCHEMA_VERSION = 2;
 export const REQUIRED_SECTIONS = Object.freeze([
   "Background",
   "Goal",
@@ -40,21 +40,45 @@ function markdownStructure(body) {
 }
 
 export function issueSnapshot(issue) {
-  const subIssueNumbers = [...new Set(
-    (issue.sub_issue_numbers ?? []).map(Number).filter(Number.isSafeInteger),
-  )].sort((left, right) => left - right);
+  const repository = String(issue.repository ?? "");
+  const rawSubIssues = Array.isArray(issue.sub_issues)
+    ? issue.sub_issues
+    : (issue.sub_issue_numbers ?? []).map((number) => ({
+        repository,
+        number,
+        state: "OPEN",
+      }));
+  const subIssues = [...new Map(rawSubIssues
+    .map((subIssue) => ({
+      repository: String(subIssue?.repository ?? repository),
+      number: Number(subIssue?.number),
+      state: String(subIssue?.state ?? "OPEN").toUpperCase(),
+    }))
+    .filter((subIssue) => (
+      subIssue.repository
+      && Number.isSafeInteger(subIssue.number)
+    ))
+    .map((subIssue) => [
+      `${subIssue.repository.toLowerCase()}#${subIssue.number}`,
+      subIssue,
+    ])).values()].sort((left, right) => (
+    left.repository.localeCompare(right.repository)
+    || left.number - right.number
+  ));
   return {
-    repository: String(issue.repository ?? ""),
+    repository,
     number: Number(issue.number),
     title: String(issue.title ?? ""),
     body: String(issue.body ?? ""),
     body_truncated: issue.body_truncated === true,
+    state: String(issue.state ?? "OPEN").toUpperCase(),
     issue_type: String(issue.issue_type ?? ""),
     parent_number: issue.parent_number == null ? null : Number(issue.parent_number),
     sub_issue_count: issue.sub_issue_count == null
-      ? subIssueNumbers.length
+      ? subIssues.length
       : Number(issue.sub_issue_count),
-    sub_issue_numbers: subIssueNumbers,
+    sub_issue_numbers: subIssues.map((subIssue) => subIssue.number),
+    sub_issues: subIssues,
   };
 }
 
@@ -98,7 +122,7 @@ export function analyzeIssue(issue, { implementationIssue = true } = {}) {
       "A Task Issue must be a tracking container with native sub-issues.",
     ));
   }
-  if (snapshot.sub_issue_count > snapshot.sub_issue_numbers.length) {
+  if (snapshot.sub_issue_count > snapshot.sub_issues.length) {
     blockers.push(blocker(
       "sub-issues-truncated",
       "The workflow could not snapshot every native sub-issue and must fail closed.",

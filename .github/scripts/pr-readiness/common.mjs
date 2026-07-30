@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { PREFIXED_TITLE, analyzeIssue } from "../issue-review/common.mjs";
 
-export const PR_READINESS_SCHEMA_VERSION = 1;
+export const PR_READINESS_SCHEMA_VERSION = 2;
 
 export function sha256(value) {
   return crypto.createHash("sha256").update(value).digest("hex");
@@ -9,6 +9,17 @@ export function sha256(value) {
 
 function blocker(source, code, message) {
   return { source, code, message };
+}
+
+function issueKey(repository, number) {
+  return `${String(repository).toLowerCase()}#${Number(number)}`;
+}
+
+function issueReference(repository, number, pullRequestRepository) {
+  return String(repository).toLowerCase()
+    === String(pullRequestRepository).toLowerCase()
+    ? `#${Number(number)}`
+    : `${repository}#${Number(number)}`;
 }
 
 export function analyzePullRequest(input) {
@@ -33,9 +44,9 @@ export function analyzePullRequest(input) {
     (issue) => issue.snapshot.repository.toLowerCase()
       === pullRequest.repository.toLowerCase(),
   );
-  const implementationIssues = sameRepository.filter(
-    (issue) => issue.snapshot.issue_type.toLowerCase() !== "task",
-  );
+  const closingIssueKeys = new Set(linkedIssues.map((issue) => (
+    issueKey(issue.snapshot.repository, issue.snapshot.number)
+  )));
   const deterministicBlockers = [];
   if (!PREFIXED_TITLE.test(pullRequest.title)) {
     deterministicBlockers.push(blocker(
@@ -58,11 +69,11 @@ export function analyzePullRequest(input) {
       "The workflow could not snapshot the complete pull-request body and must fail closed.",
     ));
   }
-  if (implementationIssues.length === 0) {
+  if (sameRepository.length === 0) {
     deterministicBlockers.push(blocker(
       "pr-linkage",
       "missing-closing-issue",
-      "Pull request must natively close at least one same-repository implementation Issue.",
+      "Pull request must natively close at least one same-repository Issue.",
     ));
   }
   if (Number(input.linked_issue_count ?? linkedIssues.length) > linkedIssues.length) {
@@ -92,6 +103,37 @@ export function analyzePullRequest(input) {
       issue_repository: issue.snapshot.repository,
       issue_number: issue.snapshot.number,
     })));
+    const missingOpenSubIssues = issue.snapshot.sub_issues.filter(
+      (subIssue) => (
+        subIssue.state !== "CLOSED"
+        && !closingIssueKeys.has(issueKey(
+          subIssue.repository,
+          subIssue.number,
+        ))
+      ),
+    );
+    if (missingOpenSubIssues.length > 0) {
+      const parent = issueReference(
+        issue.snapshot.repository,
+        issue.snapshot.number,
+        pullRequest.repository,
+      );
+      const missing = missingOpenSubIssues.map((subIssue) => issueReference(
+        subIssue.repository,
+        subIssue.number,
+        pullRequest.repository,
+      ));
+      deterministicBlockers.push({
+        ...blocker(
+          "pr-linkage",
+          "missing-open-sub-issues",
+          `Pull request closes ${parent} but does not natively close its open sub-issue(s): ${missing.join(", ")}.`,
+        ),
+        issue_repository: issue.snapshot.repository,
+        issue_number: issue.snapshot.number,
+        missing_sub_issues: missingOpenSubIssues,
+      });
+    }
   }
   const snapshot = {
     ...pullRequest,

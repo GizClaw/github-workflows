@@ -23,8 +23,10 @@ const input = {
     number: 10,
     title: "ci: Add readiness gate",
     body: issueBody,
+    state: "OPEN",
     issue_type: "Feature",
     sub_issue_numbers: [],
+    sub_issues: [],
   }],
 };
 const context = {
@@ -69,22 +71,103 @@ assert.deepEqual(blockerCodes(analyzePullRequest({
   linked_issues: [{
     ...input.linked_issues[0],
     issue_type: "Task",
-    sub_issue_numbers: [20],
+    body: "",
+    sub_issue_count: 1,
+    sub_issues: [{
+      repository: input.repository,
+      number: 20,
+      state: "OPEN",
+    }],
   }],
-})), ["missing-closing-issue"]);
+})), ["missing-open-sub-issues"]);
 assert.deepEqual(blockerCodes(analyzePullRequest({
   ...input,
   linked_issues: [
-    input.linked_issues[0],
     {
       ...input.linked_issues[0],
       number: 11,
       issue_type: "Task",
       body: "",
-      sub_issue_numbers: [20],
+      sub_issue_count: 1,
+      sub_issues: [{
+        repository: input.repository,
+        number: 20,
+        state: "OPEN",
+      }],
+    },
+    {
+      ...input.linked_issues[0],
+      number: 20,
+      parent_number: 11,
     },
   ],
 })), []);
+assert.deepEqual(blockerCodes(analyzePullRequest({
+  ...input,
+  linked_issues: [{
+    ...input.linked_issues[0],
+    number: 11,
+    issue_type: "Task",
+    body: "",
+    sub_issue_count: 1,
+    sub_issues: [{
+      repository: input.repository,
+      number: 20,
+      state: "CLOSED",
+    }],
+  }],
+})), []);
+assert.deepEqual(blockerCodes(analyzePullRequest({
+  ...input,
+  linked_issues: [
+    {
+      ...input.linked_issues[0],
+      number: 11,
+      issue_type: "Task",
+      body: "",
+      sub_issue_count: 1,
+      sub_issues: [{
+        repository: input.repository,
+        number: 20,
+        state: "CLOSED",
+      }],
+    },
+    {
+      ...input.linked_issues[0],
+      number: 20,
+      state: "CLOSED",
+      parent_number: 11,
+    },
+  ],
+})), []);
+assert.deepEqual(blockerCodes(analyzePullRequest({
+  ...input,
+  linked_issues: [
+    {
+      ...input.linked_issues[0],
+      number: 11,
+      issue_type: "Task",
+      body: "",
+      sub_issue_count: 1,
+      sub_issues: [{
+        repository: input.repository,
+        number: 20,
+        state: "OPEN",
+      }],
+    },
+    {
+      ...input.linked_issues[0],
+      number: 20,
+      parent_number: 11,
+      sub_issue_count: 1,
+      sub_issues: [{
+        repository: input.repository,
+        number: 30,
+        state: "OPEN",
+      }],
+    },
+  ],
+})), ["missing-open-sub-issues"]);
 assert.ok(blockerCodes(analyzePullRequest({
   ...input,
   linked_issues: [{
@@ -105,6 +188,39 @@ assert.ok(blockerCodes(analyzePullRequest({
   ...input,
   review_threads_truncated: true,
 })).includes("review-thread-query-truncated"));
+const missingSubIssueContext = {
+  readiness: analyzePullRequest({
+    ...input,
+    linked_issues: [{
+      ...input.linked_issues[0],
+      sub_issue_count: 1,
+      sub_issues: [{
+        repository: input.repository,
+        number: 20,
+        state: "OPEN",
+      }],
+    }],
+  }),
+  trusted_readiness_policy_sha256: "d".repeat(64),
+};
+const missingSubIssueBlocker =
+  missingSubIssueContext.readiness.deterministic_blockers.find(
+    (item) => item.code === "missing-open-sub-issues",
+  );
+assert.equal(missingSubIssueBlocker.source, "pr-linkage");
+assert.match(missingSubIssueBlocker.message, /closes #10.*#20/);
+const missingSubIssueReadiness = evaluateReadiness({
+  context: missingSubIssueContext,
+  review: {
+    findings: [],
+    readiness: { verdict: "pass", blockers: [] },
+  },
+  workflowSourceSha: "c".repeat(40),
+  model: "gpt-5.6-terra",
+  effort: "medium",
+});
+assert.equal(missingSubIssueReadiness.stage_verdicts.pr_review, "fail");
+assert.equal(missingSubIssueReadiness.stage_verdicts.issue_review, "pass");
 assert.notEqual(
   analyzePullRequest(input).snapshot_sha256,
   analyzePullRequest({ ...input, body: `${input.body}\nchanged` }).snapshot_sha256,
@@ -259,6 +375,7 @@ try {
             number: 10,
             title: "ci: Add readiness gate",
             body: issueBody,
+            state: "OPEN",
             issueType: { name: "Feature" },
             parent: null,
             subIssues: { totalCount: 0, nodes: [] },
@@ -313,6 +430,16 @@ try {
   });
   assertStale((pullRequest) => {
     pullRequest.closingIssuesReferences.nodes[0].body = `${issueBody}\nchanged`;
+  });
+  assertStale((pullRequest) => {
+    pullRequest.closingIssuesReferences.nodes[0].subIssues = {
+      totalCount: 1,
+      nodes: [{
+        repository: { nameWithOwner: input.repository },
+        number: 20,
+        state: "OPEN",
+      }],
+    };
   });
   assertStale((pullRequest) => {
     pullRequest.reviewThreads.nodes.push({

@@ -42,12 +42,20 @@ superseded snapshots only after a replacement upload succeeds.
 - Every accepted review creates three fixed Check Runs on the exact PR head:
   `OpenAI PR Review`, `OpenAI Issue Review`, and `OpenAI Code Review`. Each
   reports its own running, successful, failed, or cancelled state, while one
-  native `## 🤖 OpenAI PR review` report contains the combined evidence.
+  native `OpenAI PR Review` report contains the combined conclusion. Its
+  default view keeps the PR-format, Issue-design, and code/plan-conformance
+  verdicts visible alongside the reviewed scope and aggregate usage.
 - `OpenAI PR Review` checks the title, body, and native closing-Issue linkage.
+  When a closing Issue has open native sub-issues, every open child must also
+  be in the PR's native closing-Issue set. The rule applies recursively because
+  each included child is checked in turn; already-closed children are ignored.
   `OpenAI Issue Review` checks every linked Issue independently and aggregates
-  their format and design verdict. `OpenAI Code Review` checks only code
-  findings and Issue-plan conformance. Configure all three names as required
-  checks when every stage must block merging.
+  their format, trusted-base repository fit, and implementation-readiness
+  verdict. It applies the `write-issue` section and relationship contract and
+  the `review-issue` design-completeness gates without modifying the Issue or
+  inventing missing decisions. `OpenAI Code Review` checks only code findings
+  and Issue-plan conformance. Configure all three names as required checks when
+  every stage must block merging.
 - An execution failure publishes a titled PR comment with the specific failure
   reason and a link to the Actions run instead of leaving only a reaction.
 - Every published review reports the Codex review time, input, cached-input,
@@ -56,10 +64,11 @@ superseded snapshots only after a replacement upload succeeds.
   per-million-token model rate card: uncached input uses the input rate,
   cached input uses the cached-input rate, and output (including reasoning)
   uses the output rate. This is a token-derived estimate, not an API billing
-  ledger value. The report includes the stable PR session key, content-addressed
-  generation key, reviewed commit range, deterministic diff chunk count, and
-  per-stage usage. The stage table identifies full, incremental, reused, and
-  deterministic work, including a separate row for every linked Issue.
+  ledger value. Folded report sections retain the stable PR session key,
+  content-addressed generation key, reviewed commit range, deterministic diff
+  chunk count, and per-stage usage. The stage table identifies full,
+  incremental, reused, and deterministic work, including a separate row for
+  every linked Issue.
   Reused and deterministic rows consume zero model tokens. Cached-input tokens
   are part of input tokens, and reasoning-output tokens are part of output
   tokens; neither is added to the total a second time.

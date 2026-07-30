@@ -15,9 +15,11 @@ const valid = {
   number: 10,
   title: "ci: Add readiness gate",
   body: validBody,
+  state: "OPEN",
   issue_type: "Feature",
   parent_number: null,
   sub_issue_numbers: [],
+  sub_issues: [],
 };
 assert.deepEqual(analyzeIssue(valid).deterministic_blockers, []);
 assert.equal(issueSnapshotSha256(valid), issueSnapshotSha256({ ...valid }));
@@ -28,6 +30,10 @@ assert.notEqual(
 assert.notEqual(
   issueSnapshotSha256(valid),
   issueSnapshotSha256({ ...valid, body_truncated: true }),
+);
+assert.notEqual(
+  issueSnapshotSha256(valid),
+  issueSnapshotSha256({ ...valid, state: "CLOSED" }),
 );
 assert.ok(analyzeIssue({ ...valid, body_truncated: true })
   .deterministic_blockers.some((item) => item.code === "issue-body-truncated"));
@@ -49,7 +55,11 @@ assert.deepEqual(analyzeIssue({
   issue_type: "Task",
   body: "",
   sub_issue_count: 1,
-  sub_issue_numbers: [20],
+  sub_issues: [{
+    repository: valid.repository,
+    number: 20,
+    state: "OPEN",
+  }],
 }, { implementationIssue: false }).deterministic_blockers, []);
 assert.ok(analyzeIssue({ ...valid, body: "## Goal\n\nToo little." })
   .deterministic_blockers.some((item) => item.code === "invalid-section-contract"));

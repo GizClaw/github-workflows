@@ -47,11 +47,16 @@ async function fetchPullRequest() {
                     number
                     title
                     body
+                    state
                     issueType { name }
                     parent { number }
                     subIssues(first: 100) {
                       totalCount
-                      nodes { number }
+                      nodes {
+                        repository { nameWithOwner }
+                        number
+                        state
+                      }
                     }
                   }
                 }
@@ -102,10 +107,16 @@ const linkedIssues = pullRequest.closingIssuesReferences.nodes
     title: String(issue.title).slice(0, 500),
     body: String(issue.body).slice(0, 80_000),
     body_truncated: String(issue.body).length > 80_000,
+    state: issue.state,
     issue_type: issue.issueType?.name || "",
     parent_number: issue.parent?.number ?? null,
     sub_issue_count: issue.subIssues.totalCount,
     sub_issue_numbers: issue.subIssues.nodes.map((item) => item.number),
+    sub_issues: issue.subIssues.nodes.map((item) => ({
+      repository: item.repository.nameWithOwner,
+      number: item.number,
+      state: item.state,
+    })),
   }));
 const current = analyzePullRequest({
   repository: data.repository.nameWithOwner,

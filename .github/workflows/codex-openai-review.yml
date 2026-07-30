@@ -384,11 +384,16 @@ jobs:
                           number
                           title
                           body
+                          state
                           issueType { name }
                           parent { number }
                           subIssues(first: 100) {
                             totalCount
-                            nodes { number }
+                            nodes {
+                              repository { nameWithOwner }
+                              number
+                              state
+                            }
                           }
                         }
                       }
@@ -437,12 +442,18 @@ jobs:
                     body: clip(issue.body, 80_000),
                     body_truncated:
                       String(issue.body ?? '').length > 80_000,
+                    state: issue.state,
                     issue_type: issue.issueType?.name || '',
                     parent_number: issue.parent?.number ?? null,
                     sub_issue_count: issue.subIssues.totalCount,
                     sub_issue_numbers: issue.subIssues.nodes.map(
                       (subIssue) => subIssue.number,
                     ),
+                    sub_issues: issue.subIssues.nodes.map((subIssue) => ({
+                      repository: subIssue.repository.nameWithOwner,
+                      number: subIssue.number,
+                      state: subIssue.state,
+                    })),
                   })),
                 unresolved_openai_thread_count: pullRequest.reviewThreads.nodes
                   .filter((thread) => (
@@ -561,6 +572,10 @@ jobs:
           const fs = require('node:fs');
           const path = require('node:path');
 
+          fs.appendFileSync(
+            process.env.GITHUB_ENV,
+            `WORKFLOW_SOURCE_SHA=${process.env.EXPECTED_WORKFLOW_SOURCE_SHA}\n`,
+          );
           const output = (name, value) => {
             fs.appendFileSync(process.env.GITHUB_OUTPUT, `${name}=${value}\n`);
           };

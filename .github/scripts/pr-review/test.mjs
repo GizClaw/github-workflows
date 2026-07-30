@@ -134,6 +134,9 @@ assert.match(
   /Before reviewing code, read the linked Issue context/,
 );
 assert.match(runSource, /linked_issue_evidence/);
+assert.match(runSource, /Use the checked-out trusted base repository as evidence/);
+assert.match(runSource, /Apply the write-issue contract/);
+assert.match(runSource, /workflow_source_sha: workflowSourceSha/);
 assert.match(workflowSource, /const overallPass = readiness\.verdict === 'pass' && findingCount === 0/);
 assert.match(workflowSource, /'# ✅ OpenAI PR Review: PASS'/);
 assert.match(workflowSource, /'# ❌ OpenAI PR Review: FAIL'/);
@@ -481,6 +484,10 @@ fs.writeFileSync(outputFile, JSON.stringify(
   ), "utf8"));
   assert.equal(aggregateInput.linked_issue_evidence[0].number, 1);
   assert.equal(aggregateInput.linked_issue_evidence[0].mode, "full");
+  assert.equal(
+    completedLedger.stage_evidence.issues["example/repo#1"].trusted_base_sha,
+    base,
+  );
   assert.equal(completedLedger.generations.at(-1).status, "completed");
   assert.equal(completedLedger.generations.at(-1).aggregate.metrics.input_tokens, 100);
   const reviewOutputs = fs.readFileSync(reviewOutput, "utf8");
