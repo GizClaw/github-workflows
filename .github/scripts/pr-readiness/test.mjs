@@ -154,9 +154,10 @@ assert.equal(evaluateReadiness({
   model: "gpt-5.6-terra",
   effort: "medium",
 }).verdict, "fail");
-for (const category of [
-  "issue-readiness",
-  "plan-conformance",
+for (const [category, stage] of [
+  ["pr-format", "pr_review"],
+  ["issue-design", "issue_review"],
+  ["plan-conformance", "code_review"],
 ]) {
   const failed = evaluateReadiness({
     context,
@@ -177,7 +178,7 @@ for (const category of [
     effort: "medium",
   });
   assert.equal(failed.verdict, "fail");
-  assert.equal(failed.stage_verdicts.issue_and_plan, "fail");
+  assert.equal(failed.stage_verdicts[stage], "fail");
   assert.ok(failed.blockers.some((item) => item.source === category));
 }
 

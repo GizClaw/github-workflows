@@ -81,6 +81,7 @@ export function analyzePullRequest(input) {
   for (const issue of linkedIssues) {
     deterministicBlockers.push(...issue.deterministic_blockers.map((item) => ({
       ...item,
+      issue_repository: issue.snapshot.repository,
       issue_number: issue.snapshot.number,
     })));
   }
@@ -111,19 +112,39 @@ export function evaluateReadiness({
   model,
   effort,
 }) {
-  const blockers = [
-    ...context.readiness.deterministic_blockers,
-    ...(review.readiness?.blockers ?? []).map((item) => ({
-      source: item.category,
-      code: item.code,
-      message: item.body,
-      title: item.title,
-    })),
+  const modelBlockers = (review.readiness?.blockers ?? []).map((item) => ({
+    source: item.category,
+    code: item.code,
+    message: item.body,
+    title: item.title,
+    ...(item.issue_number == null
+      ? {}
+      : { issue_number: item.issue_number }),
+  }));
+  const prBlockers = [
+    ...context.readiness.deterministic_blockers.filter((item) => (
+      ["pr-format", "pr-linkage", "review-thread"].includes(item.source)
+    )),
+    ...modelBlockers.filter((item) => item.source === "pr-format"),
+  ];
+  const issueBlockers = [
+    ...context.readiness.deterministic_blockers.filter(
+      (item) => item.source === "issue-format",
+    ),
+    ...modelBlockers.filter((item) => item.source === "issue-design"),
+  ];
+  const codeBlockers = [
+    ...modelBlockers.filter((item) => item.source === "plan-conformance"),
     ...review.findings.map((item) => ({
       source: "code-review",
       code: item.priority,
       message: `${item.path}:${item.line}: ${item.title}`,
     })),
+  ];
+  const blockers = [
+    ...prBlockers,
+    ...issueBlockers,
+    ...codeBlockers,
   ];
   return {
     schema_version: PR_READINESS_SCHEMA_VERSION,
@@ -137,11 +158,9 @@ export function evaluateReadiness({
     model,
     effort,
     stage_verdicts: {
-      deterministic: context.readiness.deterministic_blockers.length === 0
-        ? "pass" : "fail",
-      issue_and_plan: (review.readiness?.blockers ?? []).length === 0
-        ? "pass" : "fail",
-      code_review: review.findings.length === 0 ? "pass" : "fail",
+      pr_review: prBlockers.length === 0 ? "pass" : "fail",
+      issue_review: issueBlockers.length === 0 ? "pass" : "fail",
+      code_review: codeBlockers.length === 0 ? "pass" : "fail",
     },
     verdict: blockers.length === 0 ? "pass" : "fail",
     blockers,

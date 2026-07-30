@@ -39,13 +39,15 @@ superseded snapshots only after a replacement upload succeeds.
 - A new request for the same PR cancels the previous one. Request comments use
   `👀` while running, `🚀` when finished (including a failed attempt), and `😕`
   when superseded or cancelled.
-- Every accepted review creates an `OpenAI PR review` Check Run on the exact PR
-  head commit. The check links to its Actions run and reports running,
-  successful, failed, or cancelled state in the PR Checks UI. Comment-triggered
-  reviews continue to execute from the trusted default-branch workflow.
-- The single `OpenAI PR review` Check succeeds only when the PR contract,
-  native implementation Issue linkage, Issue design, plan conformance, and
-  code review all pass. Any blocker makes that Check fail on the exact PR head.
+- Every accepted review creates three fixed Check Runs on the exact PR head:
+  `OpenAI PR Review`, `OpenAI Issue Review`, and `OpenAI Code Review`. Each
+  reports its own running, successful, failed, or cancelled state, while one
+  native `## 🤖 OpenAI PR review` report contains the combined evidence.
+- `OpenAI PR Review` checks the title, body, and native closing-Issue linkage.
+  `OpenAI Issue Review` checks every linked Issue independently and aggregates
+  their format and design verdict. `OpenAI Code Review` checks only code
+  findings and Issue-plan conformance. Configure all three names as required
+  checks when every stage must block merging.
 - An execution failure publishes a titled PR comment with the specific failure
   reason and a link to the Actions run instead of leaving only a reaction.
 - Every published review reports the Codex review time, input, cached-input,
@@ -56,16 +58,22 @@ superseded snapshots only after a replacement upload succeeds.
   uses the output rate. This is a token-derived estimate, not an API billing
   ledger value. The report includes the stable PR session key, content-addressed
   generation key, reviewed commit range, deterministic diff chunk count, and
-  per-chunk/aggregation usage. Cached-input tokens are part of input tokens,
-  and reasoning-output tokens are part of output tokens; neither is added to
-  the total a second time.
+  per-stage usage. The stage table identifies full, incremental, reused, and
+  deterministic work, including a separate row for every linked Issue.
+  Reused and deterministic rows consume zero model tokens. Cached-input tokens
+  are part of input tokens, and reasoning-output tokens are part of output
+  tokens; neither is added to the total a second time.
 - Each PR has one logical Codex session. Its 30-day Artifact v2 snapshot stores
   the validated Codex rollout plus a generation ledger containing the
   last fully reviewed head, any in-progress target, the canonical file listing,
-  chunk hashes, completed chunk results, and usage. The next review resumes the
-  session and reviews only `last_completed_head..current_head` when the commit
-  chain and base still match. Force-pushes, incompatible base updates, corrupt
-  state, and policy changes safely fall back to a complete review.
+  chunk hashes, completed chunk results, stage evidence, and usage. PR metadata,
+  every linked Issue, and code have independent content-addressed identities.
+  An unchanged stage reuses validated evidence with zero model tokens; an
+  edited PR or Issue sends only its field-level snapshot diff plus previous
+  evidence; a new code head sends only
+  `last_completed_head..current_head` when ancestry and base still match.
+  Force-pushes, incompatible base updates, missing sessions, corrupt state,
+  and relevant policy changes safely fall back to a complete stage review.
 - The reviewer fetches PR Git objects without checking out or executing the PR
   head and computes the complete diff locally, avoiding GitHub's 20,000-line
   PR-diff API limit. Files use stable byte-order listing. Diffs too large for
@@ -123,12 +131,13 @@ instructions such as `AGENTS.md`, never in untrusted PR code.
 
 Readiness evidence binds the base/head revision, normalized PR metadata,
 native Issue snapshots, trusted policy, reusable-workflow source, model, and
-effort. A new head, PR metadata edit, linked-Issue edit, policy change, or
-workflow change invalidates older evidence.
+effort. Final readiness is always regenerated for the current head. Within
+that run, only the affected content-addressed PR, Issue, or code stage is
+invalidated.
 
-`OpenAI PR review: success` means only that the configured automated blockers
-were absent. It is not an approval and does not replace human review, hardware
-or product acceptance, or deployment approval.
+Success from all three OpenAI checks means only that the configured automated
+blockers were absent. It is not an approval and does not replace human review,
+hardware or product acceptance, or deployment approval.
 
 ## Trusted caller triggers
 
@@ -148,7 +157,7 @@ on:
 The caller passes `OPENAI_API_KEY` explicitly and uses per-PR concurrency. Do
 not use `secrets: inherit`. Issue events resolve native closing PRs and invoke
 the same reusable PR reviewer; there is no separate Issue-review dispatcher or
-second Check.
+second workflow.
 
 ## Rollout
 
@@ -160,9 +169,11 @@ second Check.
 4. Store `OPENAI_API_KEY` in an allowlisted organization or repository secret
    and forward it explicitly.
 5. Open a test PR that natively closes an implementation-ready Issue and
-   confirm the `OpenAI PR review` Check is attached to the exact head.
-6. Push a new commit and confirm the previous readiness PASS is not reused.
+   confirm all three fixed OpenAI Checks are attached to the exact head.
+6. Push a new commit and confirm code is reviewed incrementally while unchanged
+   PR and Issue evidence is reused with zero model tokens.
 7. Test invalid PR metadata, an incomplete Issue, an unexplained plan
    deviation, and an actionable code finding.
-8. Only after live tests pass, configure `OpenAI PR review` as a required
-   status check in the caller repository ruleset.
+8. Edit one linked Issue and confirm only that Issue stage runs incrementally.
+9. Only after live tests pass, configure all three fixed Check names as required
+   status checks in the caller repository ruleset.

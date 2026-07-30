@@ -135,7 +135,9 @@ jobs:
       checks: write
       issues: write
     outputs:
-      check_run_id: ${{ steps.status.outputs.check_run_id }}
+      pr_check_run_id: ${{ steps.status.outputs.pr_check_run_id }}
+      issue_check_run_id: ${{ steps.status.outputs.issue_check_run_id }}
+      code_check_run_id: ${{ steps.status.outputs.code_check_run_id }}
       request_reaction_id: ${{ steps.status.outputs.request_reaction_id }}
       failure_reason: ${{ steps.status.outputs.failure_reason }}
     steps:
@@ -152,29 +154,51 @@ jobs:
         with:
           script: |
             const commentId = Number(process.env.REQUEST_COMMENT_ID);
+            const created = [];
             try {
-              const { data: checkRun } = await github.rest.checks.create({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                name: 'OpenAI PR review',
-                head_sha: process.env.PR_HEAD_SHA,
-                status: 'in_progress',
-                started_at: new Date().toISOString(),
-                details_url: process.env.DETAILS_URL,
-                external_id: [
-                  process.env.RUN_ID,
-                  process.env.RUN_ATTEMPT,
-                  process.env.PULL_REQUEST_NUMBER,
-                ].join(':'),
-                output: {
-                  title: 'Review in progress',
-                  summary: [
-                    'OpenAI is validating PR metadata, linked Issue design, plan conformance, and code findings.',
-                    `[Open the Actions run](${process.env.DETAILS_URL}).`,
-                  ].join(' '),
+              const checks = [
+                {
+                  key: 'pr',
+                  name: 'OpenAI PR Review',
+                  summary: 'OpenAI is validating PR title, body, and native closing-Issue linkage.',
                 },
-              });
-              core.setOutput('check_run_id', String(checkRun.id));
+                {
+                  key: 'issue',
+                  name: 'OpenAI Issue Review',
+                  summary: 'OpenAI is validating every linked Issue format, design, and implementation plan.',
+                },
+                {
+                  key: 'code',
+                  name: 'OpenAI Code Review',
+                  summary: 'OpenAI is validating the changed code and conformance with the reviewed Issue plans.',
+                },
+              ];
+              for (const check of checks) {
+                const { data: checkRun } = await github.rest.checks.create({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  name: check.name,
+                  head_sha: process.env.PR_HEAD_SHA,
+                  status: 'in_progress',
+                  started_at: new Date().toISOString(),
+                  details_url: process.env.DETAILS_URL,
+                  external_id: [
+                    process.env.RUN_ID,
+                    process.env.RUN_ATTEMPT,
+                    process.env.PULL_REQUEST_NUMBER,
+                    check.key,
+                  ].join(':'),
+                  output: {
+                    title: 'Review in progress',
+                    summary: [
+                      check.summary,
+                      `[Open the Actions run](${process.env.DETAILS_URL}).`,
+                    ].join(' '),
+                  },
+                });
+                created.push(checkRun.id);
+                core.setOutput(`${check.key}_check_run_id`, String(checkRun.id));
+              }
 
               if (Number.isSafeInteger(commentId) && commentId > 0) {
                 const { data: reaction } = await github.rest.reactions.createForIssueComment({
@@ -193,6 +217,20 @@ jobs:
                 'failure_reason',
                 `Could not start the review status: ${detail}`,
               );
+              for (const checkRunId of created) {
+                await github.rest.checks.update({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  check_run_id: checkRunId,
+                  status: 'completed',
+                  conclusion: 'failure',
+                  completed_at: new Date().toISOString(),
+                  output: {
+                    title: 'Review could not start',
+                    summary: detail,
+                  },
+                }).catch(() => {});
+              }
               throw error;
             }
 
@@ -691,15 +729,15 @@ jobs:
         env:
           REPOSITORY_DIR: ${{ github.workspace }}
           REVIEW_OUTPUT_SCHEMA: ${{ env.REVIEWER_SOURCE_DIR }}/.github/scripts/pr-review/review-output-schema.json
+          STAGE_OUTPUT_SCHEMA: ${{ env.REVIEWER_SOURCE_DIR }}/.github/scripts/pr-review/stage-output-schema.json
           GENERATION_KEY: ${{ steps.prepare_diff.outputs.generation_key }}
           GENERATION_REUSED: ${{ steps.prepare_diff.outputs.reused }}
           RESUMED_SESSION_ID: ${{ steps.restore_session.outputs.session_id }}
           MODEL: ${{ inputs.model }}
           EFFORT: ${{ inputs.effort }}
-          REVIEW_INSTRUCTIONS: >-
-            ${{ inputs.review-instructions }}
-            ${{ inputs.issue-review-instructions }}
-            ${{ inputs.pr-readiness-instructions }}
+          REVIEW_INSTRUCTIONS: ${{ inputs.review-instructions }}
+          ISSUE_REVIEW_INSTRUCTIONS: ${{ inputs.issue-review-instructions }}
+          PR_REVIEW_INSTRUCTIONS: ${{ inputs.pr-readiness-instructions }}
         run: node "$REVIEWER_SOURCE_DIR/.github/scripts/pr-review/run.mjs"
 
       - name: Evaluate structured PR readiness
@@ -1132,9 +1170,9 @@ jobs:
               : `# ❌ PR readiness: FAIL (${readiness.blockers.length} blocker${readiness.blockers.length === 1 ? '' : 's'})`;
             const readinessDetails = [
               '## Issue-led readiness',
-              `**PR contract:** ${code(readiness.stage_verdicts.deterministic.toUpperCase())}`,
-              `**Issue design and plan conformance:** ${code(readiness.stage_verdicts.issue_and_plan.toUpperCase())}`,
-              `**Code review:** ${code(readiness.stage_verdicts.code_review.toUpperCase())}`,
+              `**OpenAI PR Review:** ${code(readiness.stage_verdicts.pr_review.toUpperCase())}`,
+              `**OpenAI Issue Review:** ${code(readiness.stage_verdicts.issue_review.toUpperCase())}`,
+              `**OpenAI Code Review:** ${code(readiness.stage_verdicts.code_review.toUpperCase())}`,
               `**Evidence:** ${code(readiness.snapshot_sha256)}`,
               readiness.blockers.length === 0
                 ? 'No configured readiness blockers.'
@@ -1152,15 +1190,21 @@ jobs:
               if (turns.length > 0) {
                 usageDetails = [
                   '<details>',
-                  '<summary>Per-chunk and aggregation usage</summary>',
+                  '<summary>Per-stage token and cache usage</summary>',
                   '',
-                  '| Turn key | Time | Input | Cached | Cache hit | Cache write | Output | Reasoning | Total | Est. credits |',
-                  '| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |',
+                  '| Stage | Mode | Item | Time | Input | Cached | Cache hit | Cache write | Output | Reasoning | Total | Est. credits |',
+                  '| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |',
                   ...turns.map((turn) => {
                     const hit = Number(turn.cache_hit_ratio || 0) * 100;
                     const credits = turn.estimated_credits;
                     return [
-                      `| ${code(String(turn.key).slice(0, 100))}`,
+                      `| ${code(String(turn.stage || 'unknown').slice(0, 30))}`,
+                      code(String(turn.mode || 'unknown').slice(0, 30)),
+                      code(
+                        turn.issue_number == null
+                          ? String(turn.key).slice(0, 100)
+                          : `Issue #${turn.issue_number}`,
+                      ),
                       duration(turn.duration_seconds),
                       count(turn.input_tokens),
                       count(turn.cached_input_tokens),
@@ -1264,8 +1308,9 @@ jobs:
       - name: Record review result
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         env:
-          CHECK_RUN_ID: ${{ needs.start.outputs.check_run_id }}
-          READINESS_VERDICT: ${{ needs.review.outputs.readiness_verdict }}
+          PR_CHECK_RUN_ID: ${{ needs.start.outputs.pr_check_run_id }}
+          ISSUE_CHECK_RUN_ID: ${{ needs.start.outputs.issue_check_run_id }}
+          CODE_CHECK_RUN_ID: ${{ needs.start.outputs.code_check_run_id }}
           READINESS_EVIDENCE: ${{ needs.review.outputs.readiness_evidence }}
           PULL_REQUEST_NUMBER: ${{ needs.resolve.outputs.number }}
           REQUEST_COMMENT_ID: ${{ needs.resolve.outputs.request_comment_id }}
@@ -1288,12 +1333,6 @@ jobs:
             const executionSucceeded = results.every(
               (result) => result === 'success',
             );
-            const reviewPassed = process.env.READINESS_VERDICT === 'pass';
-            const conclusion = cancelled
-              ? 'cancelled'
-              : executionSucceeded && reviewPassed
-                ? 'success'
-                : 'failure';
             const failureReason = [
               process.env.START_FAILURE_REASON,
               process.env.REVIEW_FAILURE_REASON,
@@ -1314,26 +1353,60 @@ jobs:
             const blockers = Array.isArray(readiness.blockers)
               ? readiness.blockers
               : [];
-            const resultSummary = conclusion === 'success'
-              ? 'OpenAI review found no configured blockers. This is not a pull-request approval.'
-              : conclusion === 'cancelled'
-                ? 'This review was superseded or cancelled.'
-                : executionSucceeded && blockers.length > 0
-                  ? [
-                      `Found ${blockers.length} review blocker${blockers.length === 1 ? '' : 's'}:`,
-                      ...blockers.slice(0, 25).map((blocker) => (
-                        `- **${String(blocker.source).slice(0, 80)}:** ${String(blocker.message).replaceAll('@', '@\u200b').slice(0, 1_000)}`
-                      )),
-                    ].join('\n')
-                  : `**Reason:** ${safeFailureReason}`;
-            const summary = [
-              resultSummary,
-              `[Open the Actions run](${process.env.DETAILS_URL}).`,
-            ].join('\n\n');
-
-            const checkRunId = Number(process.env.CHECK_RUN_ID);
-            if (Number.isSafeInteger(checkRunId) && checkRunId > 0) {
-              await github.rest.checks.update({
+            const overallConclusion = cancelled
+              ? 'cancelled'
+              : executionSucceeded && readiness.verdict === 'pass'
+                ? 'success'
+                : 'failure';
+            const checks = [
+              {
+                id: process.env.PR_CHECK_RUN_ID,
+                name: 'OpenAI PR Review',
+                verdict: readiness.stage_verdicts?.pr_review,
+                sources: new Set(['pr-format', 'pr-linkage', 'review-thread']),
+              },
+              {
+                id: process.env.ISSUE_CHECK_RUN_ID,
+                name: 'OpenAI Issue Review',
+                verdict: readiness.stage_verdicts?.issue_review,
+                sources: new Set(['issue-format', 'issue-design']),
+              },
+              {
+                id: process.env.CODE_CHECK_RUN_ID,
+                name: 'OpenAI Code Review',
+                verdict: readiness.stage_verdicts?.code_review,
+                sources: new Set(['code-review', 'plan-conformance']),
+              },
+            ];
+            const checkUpdates = [];
+            for (const check of checks) {
+              const checkRunId = Number(check.id);
+              if (!Number.isSafeInteger(checkRunId) || checkRunId < 1) continue;
+              const conclusion = cancelled
+                ? 'cancelled'
+                : executionSucceeded && check.verdict === 'pass'
+                  ? 'success'
+                  : 'failure';
+              const stageBlockers = blockers.filter(
+                (blocker) => check.sources.has(blocker.source),
+              );
+              const resultSummary = conclusion === 'success'
+                ? `${check.name} found no configured blockers. This is not a pull-request approval.`
+                : conclusion === 'cancelled'
+                  ? 'This review was superseded or cancelled.'
+                  : executionSucceeded && stageBlockers.length > 0
+                    ? [
+                        `Found ${stageBlockers.length} blocker${stageBlockers.length === 1 ? '' : 's'}:`,
+                        ...stageBlockers.slice(0, 25).map((blocker) => (
+                          `- **${String(blocker.source).slice(0, 80)}:** ${String(blocker.message).replaceAll('@', '@\u200b').slice(0, 1_000)}`
+                        )),
+                      ].join('\n')
+                    : `**Reason:** ${safeFailureReason}`;
+              const summary = [
+                resultSummary,
+                `[Open the Actions run](${process.env.DETAILS_URL}).`,
+              ].join('\n\n');
+              checkUpdates.push(github.rest.checks.update({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 check_run_id: checkRunId,
@@ -1350,10 +1423,19 @@ jobs:
                   }[conclusion],
                   summary: summary.slice(0, 65_000),
                 },
-              });
+              }));
+            }
+            const updateResults = await Promise.allSettled(checkUpdates);
+            const failedUpdate = updateResults.find(
+              (result) => result.status === 'rejected',
+            );
+            if (failedUpdate) {
+              core.setFailed(
+                `Could not finalize every OpenAI Check: ${String(failedUpdate.reason?.message ?? failedUpdate.reason).slice(0, 500)}`,
+              );
             }
 
-            if (!executionSucceeded && conclusion === 'failure') {
+            if (!executionSucceeded && !cancelled) {
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
@@ -1422,5 +1504,5 @@ jobs:
                 success: 'rocket',
                 cancelled: 'confused',
                 failure: 'rocket',
-              }[conclusion],
+              }[overallConclusion],
             });
