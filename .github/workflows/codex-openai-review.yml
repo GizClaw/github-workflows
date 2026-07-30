@@ -1166,56 +1166,74 @@ jobs:
                   ].join('\n')),
                 ].join('\n\n');
             const findingCount = inlineFindings.length + summaryFindings.length;
-            const codeConclusion = findingCount === 0
-              ? '# ✅ Conclusion: PASS'
-              : `# ❌ Conclusion: FAIL (${findingCount} actionable finding${findingCount === 1 ? '' : 's'} found)`;
-            const conclusion = readiness.verdict === 'pass'
-              ? '# ✅ PR readiness: PASS'
-              : `# ❌ PR readiness: FAIL (${readiness.blockers.length} blocker${readiness.blockers.length === 1 ? '' : 's'})`;
+            const blockerCount = readiness.blockers.length;
+            const overallPass = readiness.verdict === 'pass' && findingCount === 0;
+            const conclusion = overallPass
+              ? '# ✅ OpenAI PR Review: PASS'
+              : '# ❌ OpenAI PR Review: FAIL';
+            const failureReasons = [
+              blockerCount > 0
+                ? `${blockerCount} readiness blocker${blockerCount === 1 ? '' : 's'}`
+                : '',
+              findingCount > 0
+                ? `${findingCount} actionable finding${findingCount === 1 ? '' : 's'}`
+                : '',
+            ].filter(Boolean);
+            const conclusionDetail = overallPass
+              ? '> **Conclusion:** Ready from the OpenAI review perspective. PR format, linked Issue design, and code/plan conformance passed with no actionable findings.'
+              : `> **Conclusion:** Not ready. ${failureReasons.join(' and ') || 'Review requirements'} must be resolved before merge.`;
+            const stageVerdict = (value) => (
+              value === 'pass' ? '✅ PASS' : '❌ FAIL'
+            );
             const readinessDetails = [
-              '## Issue-led readiness',
-              `**OpenAI PR Review:** ${code(readiness.stage_verdicts.pr_review.toUpperCase())}`,
-              `**OpenAI Issue Review:** ${code(readiness.stage_verdicts.issue_review.toUpperCase())}`,
-              `**OpenAI Code Review:** ${code(readiness.stage_verdicts.code_review.toUpperCase())}`,
-              `**Evidence:** ${code(readiness.snapshot_sha256)}`,
-              readiness.blockers.length === 0
-                ? 'No configured readiness blockers.'
-                : [
-                    '### Readiness blockers',
-                    ...readiness.blockers.slice(0, 25).map((blocker) => (
-                      `- ${code(blocker.source)} ${String(blocker.message).slice(0, 2_000)}`
-                    )),
-                  ].join('\n'),
-            ].join('\n\n');
+              '## Review checks',
+              '| Check | Result |',
+              '| --- | :---: |',
+              `| PR format | ${stageVerdict(readiness.stage_verdicts.pr_review)} |`,
+              `| Issue design | ${stageVerdict(readiness.stage_verdicts.issue_review)} |`,
+              `| Code & plan conformance | ${stageVerdict(readiness.stage_verdicts.code_review)} |`,
+            ].join('\n');
+            const blockerDetails = blockerCount === 0
+              ? ''
+              : [
+                  '## Blockers',
+                  ...readiness.blockers.slice(0, 25).map((blocker) => (
+                    `- **${code(blocker.source)}** ${String(blocker.message).slice(0, 2_000)}`
+                  )),
+                ].join('\n');
             let usageDetails = '';
             try {
               const usageData = JSON.parse(process.env.USAGE_JSON || '{}');
               const turns = Array.isArray(usageData.turns) ? usageData.turns : [];
               if (turns.length > 0) {
+                const target = (turn) => {
+                  if (turn.issue_number != null) return `Issue #${turn.issue_number}`;
+                  const key = String(turn.key || '');
+                  if (key.includes('deterministic')) return 'format rules';
+                  if (key.includes('aggregate')) return 'aggregate';
+                  const chunk = key.match(/chunk:(\d+)(?:\/(\d+))?/);
+                  if (chunk) return `chunk ${chunk[1]}${chunk[2] ? `/${chunk[2]}` : ''}`;
+                  if (turn.mode === 'reused') return 'cached evidence';
+                  return String(turn.stage || 'review');
+                };
                 usageDetails = [
                   '<details>',
-                  '<summary>Per-stage token and cache usage</summary>',
+                  '<summary>Token and cache details</summary>',
                   '',
-                  '| Stage | Mode | Item | Time | Input | Cached | Cache hit | Cache write | Output | Reasoning | Total | Est. credits |',
-                  '| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |',
+                  '| Stage | Mode | Target | Time | Input | Cached | Hit | Output | Total | Credits |',
+                  '| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |',
                   ...turns.map((turn) => {
                     const hit = Number(turn.cache_hit_ratio || 0) * 100;
                     const credits = turn.estimated_credits;
                     return [
                       `| ${code(String(turn.stage || 'unknown').slice(0, 30))}`,
                       code(String(turn.mode || 'unknown').slice(0, 30)),
-                      code(
-                        turn.issue_number == null
-                          ? String(turn.key).slice(0, 100)
-                          : `Issue #${turn.issue_number}`,
-                      ),
+                      code(target(turn)),
                       duration(turn.duration_seconds),
                       count(turn.input_tokens),
                       count(turn.cached_input_tokens),
                       `${hit.toFixed(1)}%`,
-                      count(turn.cache_write_tokens),
                       count(turn.output_tokens),
-                      count(turn.reasoning_output_tokens),
                       count(turn.total_tokens),
                       `${
                         credits === null || credits === undefined
@@ -1240,7 +1258,7 @@ jobs:
                 && Number.isFinite(Number(rates.output))
               ) {
                 creditRate = [
-                  '**Credit rate per 1M tokens:**',
+                  '- Credit rate per 1M tokens:',
                   `${code(count(rates.input))} input /`,
                   `${code(count(rates.cached_input))} cached /`,
                   `${code(count(rates.output))} output`,
@@ -1249,44 +1267,73 @@ jobs:
             } catch {
               creditRate = '';
             }
-            const usage = process.env.USAGE_AVAILABLE === 'true'
+            const usageSummary = process.env.USAGE_AVAILABLE === 'true'
               ? [
-                  `**Review time:** ${code(duration(process.env.DURATION_SECONDS))}`,
-                  `**Input tokens:** ${code(count(process.env.INPUT_TOKENS))}`,
-                  `**Cached input tokens:** ${code(count(process.env.CACHED_INPUT_TOKENS))}`,
-                  `**Cache write tokens:** ${code(count(process.env.CACHE_WRITE_TOKENS))}`,
-                  `**Cache hit ratio:** ${code(process.env.CACHE_HIT_RATIO)}`,
-                  `**Output tokens:** ${code(count(process.env.OUTPUT_TOKENS))}`,
-                  `**Reasoning tokens:** ${code(count(process.env.REASONING_OUTPUT_TOKENS))}`,
-                  `**Total tokens:** ${code(count(process.env.TOTAL_TOKENS))}`,
+                  `**Usage:** ${code(duration(process.env.DURATION_SECONDS))}`,
+                  `${code(count(process.env.TOTAL_TOKENS))} tokens`,
+                  `${code(process.env.CACHE_HIT_RATIO)} cache hit`,
                   process.env.CREDITS_AVAILABLE === 'true'
-                    ? `**Estimated Codex credits:** ${code(process.env.ESTIMATED_CREDITS)}`
-                    : '**Estimated Codex credits:** unavailable for this model',
-                  creditRate,
-                ]
+                    ? `${code(process.env.ESTIMATED_CREDITS)} credits`
+                    : 'credits unavailable',
+                ].join(' · ')
+              : `**Usage:** ${code(duration(process.env.DURATION_SECONDS))} · tokens unavailable`;
+            const usageTotals = process.env.USAGE_AVAILABLE === 'true'
+              ? [
+                  '**Totals**',
+                  '',
+                  `- Input: ${code(count(process.env.INPUT_TOKENS))}`,
+                  `- Cached input: ${code(count(process.env.CACHED_INPUT_TOKENS))}`,
+                  `- Cache write: ${code(count(process.env.CACHE_WRITE_TOKENS))}`,
+                  `- Output: ${code(count(process.env.OUTPUT_TOKENS))}`,
+                  `- Reasoning: ${code(count(process.env.REASONING_OUTPUT_TOKENS))}`,
+                  `- Total: ${code(count(process.env.TOTAL_TOKENS))}`,
+                  process.env.CREDITS_AVAILABLE === 'true'
+                    ? `- Estimated credits: ${code(process.env.ESTIMATED_CREDITS)}`
+                    : '- Estimated credits: unavailable for this model',
+                  ...(creditRate ? [creditRate] : []),
+                ].join('\n')
+              : '';
+            const metadataDetails = [
+              '<details>',
+              '<summary>Review metadata</summary>',
+              '',
+              `- Commit: ${code(process.env.PR_HEAD_SHA.slice(0, 10))}`,
+              `- Range: ${code(`${process.env.REVIEW_FROM_SHA.slice(0, 10)}..${process.env.PR_HEAD_SHA.slice(0, 10)}`)}`,
+              `- Mode: ${code(process.env.REVIEW_MODE)}`,
+              `- Diff chunks: ${code(process.env.CHUNK_COUNT)}`,
+              `- Model: ${code(process.env.MODEL)}`,
+              `- Reasoning effort: ${code(process.env.EFFORT)}`,
+              `- Session: ${code(process.env.SESSION_KEY)}`,
+              `- Generation: ${code(process.env.GENERATION_KEY)}`,
+              `- Evidence: ${code(readiness.snapshot_sha256)}`,
+              ...(usageTotals ? ['', usageTotals] : []),
+              '',
+              '</details>',
+            ].join('\n');
+            const scope = [
+              `**Scope:** ${code(process.env.PR_HEAD_SHA.slice(0, 10))}`,
+              code(`${process.env.REVIEW_FROM_SHA.slice(0, 10)}..${process.env.PR_HEAD_SHA.slice(0, 10)}`),
+              code(process.env.REVIEW_MODE),
+              `${code(process.env.CHUNK_COUNT)} diff chunk${process.env.CHUNK_COUNT === '1' ? '' : 's'}`,
+            ].join(' · ');
+            const findingDetails = findingCount === 0
+              ? ''
               : [
-                  `**Review time:** ${code(duration(process.env.DURATION_SECONDS))}`,
-                  '**Tokens:** unavailable',
-                ];
+                  '## Findings',
+                  `${inlineFindings.length} inline finding${inlineFindings.length === 1 ? '' : 's'} published.`,
+                ].join('\n\n');
             let body = [
               conclusion,
-              '## 🤖 OpenAI PR review',
-              codeConclusion,
-              `**Reviewed commit:** ${code(process.env.PR_HEAD_SHA.slice(0, 10))}`,
-              `**Reviewed range:** ${code(`${process.env.REVIEW_FROM_SHA.slice(0, 10)}..${process.env.PR_HEAD_SHA.slice(0, 10)}`)}`,
-              `**Review mode:** ${code(process.env.REVIEW_MODE)}`,
-              `**Session key:** ${code(process.env.SESSION_KEY)}`,
-              `**Generation key:** ${code(process.env.GENERATION_KEY)}`,
-              `**Diff chunks:** ${code(process.env.CHUNK_COUNT)}`,
-              `**Model:** ${code(process.env.MODEL)}`,
-              `**Reasoning effort:** ${code(process.env.EFFORT)}`,
-              ...usage,
-              usageDetails,
+              conclusionDetail,
               readinessDetails,
+              scope,
+              usageSummary,
+              blockerDetails,
+              findingDetails,
+              '## Summary',
               String(review.summary).slice(0, 12_000),
-              findingCount === 0
-                ? 'No actionable findings.'
-                : `${inlineFindings.length} inline finding${inlineFindings.length === 1 ? '' : 's'} published.`,
+              metadataDetails,
+              usageDetails,
               fallback,
             ].filter(Boolean).join('\n\n');
             if (body.length > maxCommentLength) body = `${body.slice(0, maxCommentLength - 16)}\n\n[Truncated]`;

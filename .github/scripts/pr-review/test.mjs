@@ -125,13 +125,28 @@ const workflowSource = fs.readFileSync(
   ),
   "utf8",
 );
-assert.match(workflowSource, /const codeConclusion = findingCount === 0/);
-assert.match(workflowSource, /'# ✅ Conclusion: PASS'/);
-assert.match(workflowSource, /`# ❌ Conclusion: FAIL \(\$\{findingCount\} actionable finding/);
+const runSource = fs.readFileSync(
+  path.join(path.dirname(new URL(import.meta.url).pathname), "run.mjs"),
+  "utf8",
+);
+assert.match(
+  runSource,
+  /Before reviewing code, read the linked Issue context/,
+);
+assert.match(runSource, /linked_issue_evidence/);
+assert.match(workflowSource, /const overallPass = readiness\.verdict === 'pass' && findingCount === 0/);
+assert.match(workflowSource, /'# ✅ OpenAI PR Review: PASS'/);
+assert.match(workflowSource, /'# ❌ OpenAI PR Review: FAIL'/);
 assert.match(
   workflowSource,
-  /let body = \[\n\s+conclusion,\n\s+'## 🤖 OpenAI PR review',\n\s+codeConclusion,/,
+  /let body = \[\n\s+conclusion,\n\s+conclusionDetail,\n\s+readinessDetails,/,
 );
+assert.match(workflowSource, /'> \*\*Conclusion:\*\* Ready from the OpenAI review perspective\./);
+assert.match(workflowSource, /'## Review checks'/);
+assert.match(workflowSource, /'<summary>Review metadata<\/summary>'/);
+assert.match(workflowSource, /'<summary>Token and cache details<\/summary>'/);
+assert.doesNotMatch(workflowSource, /'## 🤖 OpenAI PR review'/);
+assert.doesNotMatch(workflowSource, /'# ✅ PR readiness: PASS'/);
 for (const name of [
   "OpenAI PR Review",
   "OpenAI Issue Review",
@@ -152,7 +167,7 @@ assert.match(
   /executionSucceeded && check\.verdict === 'pass'[\s\S]*?\? 'success'/,
 );
 assert.match(workflowSource, /failure: executionSucceeded[\s\S]*?'Review blocked'/);
-assert.match(workflowSource, /Per-stage token and cache usage/);
+assert.match(workflowSource, /Token and cache details/);
 
 assert.deepEqual(
   usageDelta(
@@ -446,6 +461,26 @@ fs.writeFileSync(outputFile, JSON.stringify(
     path.join(state, "review-ledger.json"),
     "utf8",
   ));
+  const codeIssueContext = JSON.parse(fs.readFileSync(path.join(
+    state,
+    "generations",
+    latestGeneration.key,
+    "stage-inputs",
+    "code-linked-issues.json",
+  ), "utf8"));
+  assert.equal(codeIssueContext.mode, "full");
+  assert.match(
+    codeIssueContext.linked_issues[0].snapshot.body,
+    /## Background[\s\S]*## Test And Acceptance Criteria/,
+  );
+  const aggregateInput = JSON.parse(fs.readFileSync(path.join(
+    state,
+    "generations",
+    latestGeneration.key,
+    "aggregate-input.json",
+  ), "utf8"));
+  assert.equal(aggregateInput.linked_issue_evidence[0].number, 1);
+  assert.equal(aggregateInput.linked_issue_evidence[0].mode, "full");
   assert.equal(completedLedger.generations.at(-1).status, "completed");
   assert.equal(completedLedger.generations.at(-1).aggregate.metrics.input_tokens, 100);
   const reviewOutputs = fs.readFileSync(reviewOutput, "utf8");
@@ -576,6 +611,32 @@ fs.writeFileSync(outputFile, JSON.stringify(
     .find((line) => line.startsWith("usage_json="));
   const issueChangedUsage = JSON.parse(
     issueChangedUsageLine.slice("usage_json=".length),
+  );
+  const changedCodeIssueContext = JSON.parse(fs.readFileSync(path.join(
+    state,
+    "generations",
+    latestGeneration.key,
+    "stage-inputs",
+    "code-linked-issues.json",
+  ), "utf8"));
+  assert.equal(changedCodeIssueContext.mode, "incremental");
+  assert.equal(
+    Object.hasOwn(changedCodeIssueContext.linked_issues[0], "snapshot"),
+    false,
+  );
+  assert.equal(
+    changedCodeIssueContext.linked_issues[0].change.mode,
+    "incremental",
+  );
+  const changedAggregateInput = JSON.parse(fs.readFileSync(path.join(
+    state,
+    "generations",
+    latestGeneration.key,
+    "aggregate-input.json",
+  ), "utf8"));
+  assert.equal(
+    changedAggregateInput.linked_issue_evidence[0].change.mode,
+    "incremental",
   );
   assert.deepEqual(
     issueChangedUsage.turns.map((turn) => [turn.stage, turn.mode]),
