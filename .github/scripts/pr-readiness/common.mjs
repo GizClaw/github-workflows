@@ -35,7 +35,7 @@ export function analyzePullRequest(input) {
       ? null : String(input.trigger_comment_id),
   };
   const linkedIssues = (input.linked_issues ?? [])
-    .map((issue) => analyzeIssue(issue, { implementationIssue: false }))
+    .map((issue) => analyzeIssue(issue))
     .sort((left, right) => (
       left.snapshot.repository.localeCompare(right.snapshot.repository)
       || left.snapshot.number - right.snapshot.number

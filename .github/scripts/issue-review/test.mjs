@@ -2,7 +2,6 @@
 
 import assert from "node:assert/strict";
 import {
-  TRACKING_SECTIONS,
   analyzeIssue,
   issueSnapshotSha256,
 } from "./common.mjs";
@@ -57,12 +56,11 @@ assert.notEqual(
 );
 assert.ok(analyzeIssue({ ...valid, body_truncated: true })
   .deterministic_blockers.some((item) => item.code === "issue-body-truncated"));
-assert.ok(analyzeIssue({ ...valid, title: "Bad title" })
-  .deterministic_blockers.some((item) => item.code === "invalid-title"));
-assert.ok(analyzeIssue({ ...valid, issue_type: "" })
-  .deterministic_blockers.some((item) => item.code === "missing-issue-type"));
-assert.ok(analyzeIssue({ ...valid, issue_type: "Task" })
-  .deterministic_blockers.some((item) => item.code === "tracking-task"));
+assert.deepEqual(
+  analyzeIssue({ ...valid, title: "Project-specific title", issue_type: "" })
+    .deterministic_blockers,
+  [],
+);
 assert.ok(analyzeIssue({
   ...valid,
   sub_issue_count: 101,
@@ -80,51 +78,10 @@ assert.deepEqual(analyzeIssue({
     number: 20,
     state: "OPEN",
   }],
-}, { implementationIssue: false }).deterministic_blockers, []);
-assert.deepEqual(
-  TRACKING_SECTIONS,
-  ["Background", "Goal", "Sub-issues", "Completion Criteria"],
-);
-assert.ok(analyzeIssue({
-  ...valid,
-  body: validBody.replace("### Non-goals", "### Scope"),
-}).deterministic_blockers.some((item) => item.code === "missing-non-goals"));
-assert.ok(analyzeIssue({
-  ...valid,
-  body: validBody.replace("### Validation", "### Verification"),
-}).deterministic_blockers.some(
-  (item) => item.code === "invalid-test-and-acceptance-structure",
-));
-assert.ok(analyzeIssue({
-  ...valid,
-  issue_type: "Task",
-  body: validBody,
-  sub_issue_count: 1,
-  sub_issues: [{
-    repository: valid.repository,
-    number: 20,
-    state: "OPEN",
-  }],
-}, { implementationIssue: false }).deterministic_blockers.some(
-  (item) => item.code === "invalid-section-contract",
-));
-assert.ok(analyzeIssue({ ...valid, body: "## Goal\n\nToo little." })
-  .deterministic_blockers.some((item) => item.code === "invalid-section-contract"));
-assert.ok(analyzeIssue({
-  ...valid,
-  body: validBody.replace(
-    "Background details.",
-    "Parent: #1\n\n- Follow up to: #2",
-  ),
-}).deterministic_blockers.some(
-  (item) => item.code === "invalid-background-relationship",
-));
+}).deterministic_blockers, []);
 assert.deepEqual(analyzeIssue({
   ...valid,
-  body: validBody.replace(
-    "Design details.",
-    "```markdown\n## Not a real top-level section\n```\n\nDesign details.",
-  ),
+  body: "Any project-defined Issue structure is accepted deterministically.",
 }).deterministic_blockers, []);
 
 process.stdout.write("issue-review tests passed\n");

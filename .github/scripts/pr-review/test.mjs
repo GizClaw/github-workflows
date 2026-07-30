@@ -144,8 +144,12 @@ assert.match(
   /Before reviewing code, read the linked Issue context/,
 );
 assert.match(runSource, /linked_issue_evidence/);
-assert.match(runSource, /Use the checked-out trusted base repository as evidence/);
-assert.match(runSource, /Apply the write-issue contract/);
+assert.match(runSource, /Discover the Issue-review policy from the checked-out trusted base repository/);
+assert.match(
+  runSource,
+  /trusted-base AGENTS\.md hierarchy.*authoritative project Issue contract/,
+);
+assert.match(runSource, /Do not impose a built-in title, Issue Type, section list/);
 assert.match(runSource, /workflow_source_sha: workflowSourceSha/);
 assert.match(runSource, /deterministic PR linkage owns that decision/);
 assert.match(runSource, /do not return a second blocker for the same condition/);

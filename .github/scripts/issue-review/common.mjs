@@ -1,19 +1,6 @@
 import crypto from "node:crypto";
 
-export const ISSUE_REVIEW_SCHEMA_VERSION = 2;
-export const REQUIRED_SECTIONS = Object.freeze([
-  "Background",
-  "Goal",
-  "Code Changes Tree",
-  "Design",
-  "Test And Acceptance Criteria",
-]);
-export const TRACKING_SECTIONS = Object.freeze([
-  "Background",
-  "Goal",
-  "Sub-issues",
-  "Completion Criteria",
-]);
+export const ISSUE_REVIEW_SCHEMA_VERSION = 3;
 export const PREFIXED_TITLE = /^[a-z][a-z0-9-]*(?:\/[a-z][a-z0-9-]*)*: \S.*$/;
 
 export function sha256(value) {
@@ -22,44 +9,6 @@ export function sha256(value) {
 
 function blocker(code, message) {
   return { source: "issue-format", code, message };
-}
-
-function markdownStructure(body) {
-  const lines = String(body).split(/\r?\n/);
-  const headings = [];
-  const visibleLines = [];
-  let fence = "";
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index];
-    const fenceMatch = line.match(/^\s*(`{3,}|~{3,})/);
-    if (fenceMatch) {
-      if (!fence) fence = fenceMatch[1][0];
-      else if (fence === fenceMatch[1][0]) fence = "";
-      continue;
-    }
-    if (fence) continue;
-    visibleLines.push({ index, line });
-    const heading = line.match(/^## (.+?)\s*$/)?.[1];
-    if (heading) headings.push({ index, heading });
-  }
-  return { lines, headings, visibleLines };
-}
-
-function sectionText(structure, headingName) {
-  const heading = structure.headings.find(
-    (item) => item.heading === headingName,
-  );
-  if (!heading) return "";
-  const nextHeading = structure.headings.find(
-    (item) => item.index > heading.index,
-  );
-  return structure.visibleLines
-    .filter((item) => (
-      item.index > heading.index
-      && (!nextHeading || item.index < nextHeading.index)
-    ))
-    .map((item) => item.line)
-    .join("\n");
 }
 
 export function issueSnapshot(issue) {
@@ -109,106 +58,19 @@ export function issueSnapshotSha256(issue) {
   return sha256(JSON.stringify(issueSnapshot(issue)));
 }
 
-export function analyzeIssue(issue, { implementationIssue = true } = {}) {
+export function analyzeIssue(issue) {
   const snapshot = issueSnapshot(issue);
   const blockers = [];
-  if (!PREFIXED_TITLE.test(snapshot.title)) {
-    blockers.push(blocker(
-      "invalid-title",
-      "Issue title must use the lowercase `prefix: Subject` format.",
-    ));
-  }
-  if (!snapshot.issue_type) {
-    blockers.push(blocker(
-      "missing-issue-type",
-      "Issue must have a GitHub Issue Type.",
-    ));
-  }
   if (snapshot.body_truncated) {
     blockers.push(blocker(
       "issue-body-truncated",
       "The workflow could not snapshot the complete Issue body and must fail closed.",
     ));
   }
-  if (implementationIssue && snapshot.issue_type.toLowerCase() === "task") {
-    blockers.push(blocker(
-      "tracking-task",
-      "A pull request must close a concrete implementation Issue, not only a Task container.",
-    ));
-  }
-  if (
-    snapshot.issue_type.toLowerCase() === "task"
-    && snapshot.sub_issue_count === 0
-  ) {
-    blockers.push(blocker(
-      "task-without-sub-issues",
-      "A Task Issue must be a tracking container with native sub-issues.",
-    ));
-  }
   if (snapshot.sub_issue_count > snapshot.sub_issues.length) {
     blockers.push(blocker(
       "sub-issues-truncated",
       "The workflow could not snapshot every native sub-issue and must fail closed.",
-    ));
-  }
-
-  const structure = markdownStructure(snapshot.body);
-  const sections = structure.headings.map((item) => item.heading);
-  const expectedSections = snapshot.issue_type.toLowerCase() === "task"
-    ? TRACKING_SECTIONS
-    : REQUIRED_SECTIONS;
-  if (
-    sections.length !== expectedSections.length
-    || sections.some((section, index) => section !== expectedSections[index])
-  ) {
-    blockers.push(blocker(
-      "invalid-section-contract",
-      `Issue must contain exactly these top-level sections in order: ${expectedSections.join(", ")}.`,
-    ));
-  }
-  const goal = sectionText(structure, "Goal");
-  if (!/^### Non-goals\s*$/m.test(goal)) {
-    blockers.push(blocker(
-      "missing-non-goals",
-      "Issue Goal must contain a `### Non-goals` subsection.",
-    ));
-  }
-  if (snapshot.issue_type.toLowerCase() !== "task") {
-    const testAndAcceptance = sectionText(
-      structure,
-      "Test And Acceptance Criteria",
-    );
-    const acceptanceIndex = testAndAcceptance.search(
-      /^### Acceptance Criteria\s*$/m,
-    );
-    const validationIndex = testAndAcceptance.search(/^### Validation\s*$/m);
-    if (
-      acceptanceIndex < 0
-      || validationIndex < 0
-      || acceptanceIndex > validationIndex
-    ) {
-      blockers.push(blocker(
-        "invalid-test-and-acceptance-structure",
-        "Test And Acceptance Criteria must contain `### Acceptance Criteria` followed by `### Validation`.",
-      ));
-    }
-  }
-
-  const background = sectionText(structure, "Background");
-  for (const label of ["Parent", "Prerequisite of", "Follow up to"]) {
-    if (new RegExp(`^${label}:`, "m").test(background)) {
-      blockers.push(blocker(
-        "invalid-background-relationship",
-        `${label} relationships must be Markdown list items.`,
-      ));
-    }
-  }
-  if (
-    /^- (?:Prerequisite of|Follow up to):\s+#\d+\s*$/m.test(background)
-  ) {
-    blockers.push(blocker(
-      "invalid-background-relationship",
-      "Prerequisite of and Follow up to relationships must use nested Issue lists.",
     ));
   }
 

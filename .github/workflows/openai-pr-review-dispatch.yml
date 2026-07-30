@@ -35,7 +35,8 @@ jobs:
       review-instructions: >-
         Review the pull-request diff and report actionable findings.
       issue-review-instructions: >-
-        Enforce the write-issue implementation-readiness contract.
+        Follow the trusted-base AGENTS.md hierarchy and the Issue-review
+        documents it requires.
       pr-readiness-instructions: >-
         Require valid PR metadata, native implementation-Issue linkage,
         Issue-plan conformance, validation evidence, and no actionable findings.
@@ -105,7 +106,8 @@ jobs:
       review-instructions: >-
         Review the pull-request diff and report actionable findings.
       issue-review-instructions: >-
-        Enforce the write-issue implementation-readiness contract.
+        Follow the trusted-base AGENTS.md hierarchy and the Issue-review
+        documents it requires.
       pr-readiness-instructions: >-
         Require valid PR metadata, native implementation-Issue linkage,
         Issue-plan conformance, validation evidence, and no actionable findings.

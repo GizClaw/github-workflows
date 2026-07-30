@@ -36,7 +36,7 @@ on:
       issue-review-instructions:
         description: Trusted caller policy for deciding whether linked Issues are implementation-ready.
         required: false
-        default: Require an implementation-ready Issue with concrete scope, design, file tree, and observable acceptance criteria.
+        default: Follow the trusted-base AGENTS.md hierarchy and the Issue-review documents it requires.
         type: string
       pr-readiness-instructions:
         description: Trusted caller policy for PR metadata, Issue-plan conformance, and blocking findings.

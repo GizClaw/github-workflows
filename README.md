@@ -52,11 +52,11 @@ upload succeeds.
   be in the PR's native closing-Issue set. The rule applies recursively because
   each included child is checked in turn; already-closed children are ignored.
   `OpenAI Issue Review` checks every linked Issue independently and aggregates
-  their format, trusted-base repository fit, and implementation-readiness
-  verdict. It applies the appropriate Tracking or Implementation section
-  contract, explicit Non-goals, relationship formatting, acceptance/validation
-  separation, and the `review-issue` design-completeness gates without
-  modifying the Issue or inventing missing decisions. `OpenAI Code Review`
+  their trusted-base project-policy, repository-fit, and
+  implementation-readiness verdict. It reads the project's root and applicable
+  nested `AGENTS.md` files, follows the Issue-review and module documents they
+  require, and applies that repository-owned contract without modifying the
+  Issue or inventing missing decisions. `OpenAI Code Review`
   checks only code findings and Issue-plan conformance. Configure all three
   names as required checks when every stage must block merging.
 - An execution failure publishes a titled PR comment with the specific failure
@@ -119,27 +119,24 @@ that should be allowed to review.
 
 ## Issue-led readiness contract
 
-The default contract implements the same core rules as `write-issue`:
+The default Issue contract comes from the consuming project's trusted
+default-branch `AGENTS.md` hierarchy and the Issue-review documents it
+designates. The workflow itself enforces only cross-project integrity and PR
+linkage requirements:
 
-- PR and Issue titles use lowercase `prefix: Subject` form.
+- PR titles use lowercase `prefix: Subject` form.
 - The PR body describes the delivered result and validation.
 - The PR has at least one same-repository native closing Issue from GraphQL
   `closingIssuesReferences`; text-only references do not count.
-- A PR closes a concrete implementation Issue rather than only a `Task`
-  tracking container.
-- Implementation Issues contain exactly `Background`, `Goal`,
-  `Code Changes Tree`, `Design`, and `Test And Acceptance Criteria` as ordered
-  top-level sections.
-- Issue relationships use Markdown-list form, planned paths fit the trusted
-  repository layout, the design is concrete, and acceptance criteria are
-  observable.
+- Issue and sub-issue snapshots must be complete.
 - The complete PR result follows the current Issue plan. Material deviations
   must be reflected in the Issue or disclosed and resolved in the PR.
 
-Caller policy can add required sections, allowed prefixes or Issue Types,
-ownership rules, validation commands, platform requirements, and finding
-severity rules. Repository-specific policy belongs in trusted default-branch
-instructions such as `AGENTS.md`, never in untrusted PR code.
+Caller policy can add trusted organization-level constraints. Repository-owned
+title formats, Issue Types, sections, relationships, ownership rules,
+validation commands, platform requirements, and finding severity rules belong
+in trusted default-branch `AGENTS.md` instructions or documents they require,
+never in untrusted PR code.
 
 Readiness evidence binds the base/head revision, normalized PR metadata,
 native Issue snapshots, trusted policy, reusable-workflow source, model, and
