@@ -142,11 +142,12 @@ validation commands, platform requirements, and finding severity rules belong
 in trusted default-branch `AGENTS.md` instructions or documents they require,
 never in untrusted PR code.
 
-Readiness evidence binds the base/head revision, normalized PR metadata,
-native Issue snapshots, trusted policy, reusable-workflow source, model, and
-effort. Final readiness is always regenerated for the current head. Within
-that run, only the affected content-addressed PR, Issue, or code stage is
-invalidated.
+Readiness evidence records the reusable-workflow source for audit and binds the
+base/head revision, normalized PR metadata, native Issue snapshots, trusted
+policy, model, and effort. Final readiness is always regenerated for the
+current head. Within that run, only the affected content-addressed PR, Issue,
+or code stage is invalidated. A reusable-workflow source change alone does not
+invalidate a compatible session or its stage evidence.
 
 Success from all three OpenAI checks means only that the configured automated
 blockers were absent. It is not an approval and does not replace human review,
@@ -189,9 +190,10 @@ stage modes below describe model work and evidence reuse inside that run.
 | Rerun an unchanged head | deterministic checks plus `reused` | `reused` | `reused` | All three with zero model tokens |
 
 An Issue edit revalidates plan conformance without resending an unchanged
-complete code diff. A workflow-source, runtime, model, or trusted-policy change
-intentionally invalidates incompatible session evidence and safely starts the
-affected review stages again.
+complete code diff. A runtime, model, or trusted-policy change intentionally
+invalidates incompatible session evidence and safely starts the affected
+review stages again. A workflow-source change remains auditable but preserves
+compatible cached evidence.
 
 When editing PR metadata, preserve the native closing-Issue relationship.
 Removing or changing that relationship changes the plan-conformance identity

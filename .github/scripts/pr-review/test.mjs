@@ -165,7 +165,21 @@ assert.match(
   /trusted-base AGENTS\.md hierarchy.*authoritative project Issue contract/,
 );
 assert.match(runSource, /Do not impose a built-in title, Issue Type, section list/);
-assert.match(runSource, /workflow_source_sha: workflowSourceSha/);
+assert.doesNotMatch(
+  runSource,
+  /workflow_source_sha: workflowSourceSha/,
+  "workflow source revisions must not invalidate stage evidence",
+);
+assert.doesNotMatch(
+  workflowSource,
+  /const expected = \{(?:(?!^\s+\};)[\s\S])*?workflow_source_sha/m,
+  "workflow source revisions must not invalidate restored sessions",
+);
+assert.match(
+  workflowSource,
+  /workflow_source_sha: process\.env\.WORKFLOW_SOURCE_SHA/,
+  "workflow source revisions should remain in manifests for audit",
+);
 assert.match(runSource, /deterministic PR linkage owns that decision/);
 assert.match(runSource, /do not return a second blocker for the same condition/);
 assert.match(workflowSource, /const overallPass = readiness\.verdict === 'pass' && findingCount === 0/);
@@ -490,6 +504,7 @@ fs.writeFileSync(outputFile, JSON.stringify(
       GENERATION_KEY: latestGeneration.key,
       MODEL: "gpt-5.6-terra",
       EFFORT: "medium",
+      WORKFLOW_SOURCE_SHA: "a".repeat(40),
       REVIEW_INSTRUCTIONS: "Review the diff.",
       ISSUE_REVIEW_INSTRUCTIONS: "Review the Issue.",
       PR_REVIEW_INSTRUCTIONS: "Review PR readiness.",
@@ -576,6 +591,7 @@ fs.writeFileSync(outputFile, JSON.stringify(
       RESUMED_SESSION_ID: "019f0000-0000-7000-8000-000000000001",
       MODEL: "gpt-5.6-terra",
       EFFORT: "medium",
+      WORKFLOW_SOURCE_SHA: "b".repeat(40),
       REVIEW_INSTRUCTIONS: "Review the diff.",
       ISSUE_REVIEW_INSTRUCTIONS: "Review the Issue.",
       PR_REVIEW_INSTRUCTIONS: "Review PR readiness.",

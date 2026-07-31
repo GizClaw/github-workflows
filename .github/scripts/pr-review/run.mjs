@@ -35,7 +35,6 @@ const stageSchemaFile = required("STAGE_OUTPUT_SCHEMA");
 const generationKey = required("GENERATION_KEY");
 const model = required("MODEL");
 const effort = required("EFFORT");
-const workflowSourceSha = process.env.WORKFLOW_SOURCE_SHA ?? "";
 const codeReviewInstructions = required("REVIEW_INSTRUCTIONS");
 const issueReviewInstructions = required("ISSUE_REVIEW_INSTRUCTIONS");
 const prReviewInstructions = required("PR_REVIEW_INSTRUCTIONS");
@@ -224,7 +223,6 @@ function stagePolicySha(stage) {
   }[stage];
   return stageSha256({
     stage,
-    workflow_source_sha: workflowSourceSha,
     trusted_readiness_policy_sha256:
       context.trusted_readiness_policy_sha256,
     review_instructions: instructions,
