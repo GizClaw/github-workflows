@@ -41,6 +41,10 @@ upload succeeds.
 - A new request for the same PR cancels the previous one. Request comments use
   `👀` while running, `🚀` when finished (including a failed attempt), and `😕`
   when superseded or cancelled.
+- Actions workflow reruns are rejected before review work starts because a
+  rerun reuses an old event while resolving the PR's current head and can lose
+  the incremental checkpoint chain. Push a new commit, post a new
+  `@codex review` comment, or dispatch a new workflow run instead.
 - Every accepted review creates three fixed Check Runs on the exact PR head:
   `OpenAI PR Review`, `OpenAI Issue Review`, and `OpenAI Code Review`. Each
   reports its own running, successful, failed, or cancelled state, while one

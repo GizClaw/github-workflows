@@ -125,6 +125,21 @@ const workflowSource = fs.readFileSync(
   ),
   "utf8",
 );
+assert.match(
+  workflowSource,
+  /^  rerun-guard:\n(?:(?!^  \S)[\s\S])*?RUN_ATTEMPT: \$\{\{ github\.run_attempt \}\}(?:(?!^  \S)[\s\S])*?if \[ "\$RUN_ATTEMPT" -ne 1 \]; then(?:(?!^  \S)[\s\S])*?exit 1$/m,
+  "rerun guard must fail before an old workflow attempt can review again",
+);
+for (const jobName of ["resolve", "start", "review", "publish", "finalize"]) {
+  assert.match(
+    workflowSource,
+    new RegExp(
+      `^  ${jobName}:\\n(?:(?!^  \\S)[\\s\\S])*?^    if: .*github\\.run_attempt == 1`,
+      "m",
+    ),
+    `${jobName} must not run during a workflow rerun`,
+  );
+}
 for (const jobName of ["start", "finalize"]) {
   assert.match(
     workflowSource,

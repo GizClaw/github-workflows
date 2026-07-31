@@ -71,7 +71,21 @@ on:
         value: ${{ jobs.review.outputs.readiness_evidence }}
 
 jobs:
+  rerun-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Reject workflow reruns
+        env:
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          if [ "$RUN_ATTEMPT" -ne 1 ]; then
+            echo "::error title=Workflow reruns are disabled::Create a new review request instead (for example, post a new @codex review comment). Re-running an old Actions run can discard the incremental-review checkpoint and trigger a full review."
+            exit 1
+          fi
+
   resolve:
+    needs: rerun-guard
+    if: github.run_attempt == 1
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -129,7 +143,7 @@ jobs:
 
   start:
     needs: resolve
-    if: needs.resolve.outputs.eligible == 'true'
+    if: github.run_attempt == 1 && needs.resolve.outputs.eligible == 'true'
     runs-on: ubuntu-latest
     permissions:
       checks: write
@@ -237,7 +251,7 @@ jobs:
 
   review:
     needs: [resolve, start]
-    if: needs.resolve.outputs.eligible == 'true'
+    if: github.run_attempt == 1 && needs.resolve.outputs.eligible == 'true'
     runs-on: ubuntu-latest
     permissions:
       actions: write
@@ -1047,7 +1061,7 @@ jobs:
 
   publish:
     needs: [resolve, review]
-    if: needs.review.result == 'success'
+    if: github.run_attempt == 1 && needs.review.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -1366,7 +1380,7 @@ jobs:
 
   finalize:
     needs: [resolve, start, review, publish]
-    if: always() && needs.resolve.outputs.eligible == 'true'
+    if: always() && github.run_attempt == 1 && needs.resolve.outputs.eligible == 'true'
     runs-on: ubuntu-latest
     permissions:
       checks: write
