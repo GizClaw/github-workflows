@@ -55,7 +55,50 @@ const context = {
 const blockerCodes = (readiness) => (
   readiness.deterministic_blockers.map((item) => item.code)
 );
+const closingChildren = Array.from({ length: 31 }, (_, index) => ({
+  ...input.linked_issues[0],
+  number: 101 + index,
+  parent_number: 100,
+}));
+const manyLinkedIssues = [{
+  ...input.linked_issues[0],
+  number: 100,
+  issue_type: "Task",
+  body: taskBody,
+  sub_issue_count: closingChildren.length,
+  sub_issues: closingChildren.map((issue) => ({
+    repository: issue.repository,
+    number: issue.number,
+    state: issue.state,
+  })),
+}, ...closingChildren];
+const manyLinkedIssuesInput = {
+  ...input,
+  linked_issues: manyLinkedIssues,
+  linked_issue_count: manyLinkedIssues.length,
+};
+const scriptDirectory = path.dirname(new URL(import.meta.url).pathname);
+const verifySource = fs.readFileSync(
+  path.join(scriptDirectory, "verify.mjs"),
+  "utf8",
+);
+const workflowSource = fs.readFileSync(
+  path.join(scriptDirectory, "..", "..", "workflows", "codex-openai-review.yml"),
+  "utf8",
+);
+for (const source of [verifySource, workflowSource]) {
+  assert.match(source, /closingIssuesReferences\(first: 100\)/);
+  assert.doesNotMatch(source, /closingIssuesReferences\.nodes\s*\.slice\(/);
+}
 assert.deepEqual(context.readiness.deterministic_blockers, []);
+assert.deepEqual(
+  analyzePullRequest(manyLinkedIssuesInput).deterministic_blockers,
+  [],
+);
+assert.ok(blockerCodes(analyzePullRequest({
+  ...manyLinkedIssuesInput,
+  linked_issue_count: manyLinkedIssues.length + 1,
+})).includes("too-many-closing-issues"));
 assert.ok(analyzePullRequest({ ...input, title: "Bad title" })
   .deterministic_blockers.some((item) => item.code === "invalid-title"));
 assert.ok(analyzePullRequest({ ...input, body: "" })
@@ -426,6 +469,35 @@ try {
     fs.readFileSync(outputFile, "utf8"),
     new RegExp(context.readiness.snapshot_sha256),
   );
+
+  const manyFixture = structuredClone(fixture);
+  manyFixture.repository.pullRequest.closingIssuesReferences = {
+    totalCount: manyLinkedIssues.length,
+    nodes: manyLinkedIssues.map((issue) => ({
+      repository: { nameWithOwner: issue.repository },
+      number: issue.number,
+      title: issue.title,
+      body: issue.body,
+      state: issue.state,
+      issueType: { name: issue.issue_type },
+      parent: issue.parent_number == null
+        ? null
+        : { number: issue.parent_number },
+      subIssues: {
+        totalCount: issue.sub_issue_count ?? 0,
+        nodes: (issue.sub_issues ?? []).map((subIssue) => ({
+          repository: { nameWithOwner: subIssue.repository },
+          number: subIssue.number,
+          state: subIssue.state,
+        })),
+      },
+    })),
+  };
+  fs.writeFileSync(fixtureFile, JSON.stringify(manyFixture));
+  const manyReadiness = analyzePullRequest(manyLinkedIssuesInput);
+  const manyResult = verify(manyReadiness.snapshot_sha256);
+  assert.equal(manyResult.status, 0, manyResult.stderr);
+  fs.writeFileSync(fixtureFile, JSON.stringify(fixture));
 
   const assertStale = (mutate) => {
     const staleFixture = structuredClone(fixture);
