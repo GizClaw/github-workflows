@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 
-export const ISSUE_REVIEW_SCHEMA_VERSION = 3;
+export const ISSUE_REVIEW_SCHEMA_VERSION = 4;
 export const PREFIXED_TITLE = /^[a-z][a-z0-9-]*(?:\/[a-z][a-z0-9-]*)*: \S.*$/;
 
 export function sha256(value) {
@@ -9,6 +9,26 @@ export function sha256(value) {
 
 function blocker(code, message) {
   return { source: "issue-format", code, message };
+}
+
+function normalizeIssueReferences(references, defaultRepository) {
+  return [...new Map((Array.isArray(references) ? references : [])
+    .map((reference) => ({
+      repository: String(reference?.repository ?? defaultRepository),
+      number: Number(reference?.number),
+      state: String(reference?.state ?? "OPEN").toUpperCase(),
+    }))
+    .filter((reference) => (
+      reference.repository
+      && Number.isSafeInteger(reference.number)
+    ))
+    .map((reference) => [
+      `${reference.repository.toLowerCase()}#${reference.number}`,
+      reference,
+    ])).values()].sort((left, right) => (
+    left.repository.localeCompare(right.repository)
+    || left.number - right.number
+  ));
 }
 
 export function issueSnapshot(issue) {
@@ -20,23 +40,9 @@ export function issueSnapshot(issue) {
         number,
         state: "OPEN",
       }));
-  const subIssues = [...new Map(rawSubIssues
-    .map((subIssue) => ({
-      repository: String(subIssue?.repository ?? repository),
-      number: Number(subIssue?.number),
-      state: String(subIssue?.state ?? "OPEN").toUpperCase(),
-    }))
-    .filter((subIssue) => (
-      subIssue.repository
-      && Number.isSafeInteger(subIssue.number)
-    ))
-    .map((subIssue) => [
-      `${subIssue.repository.toLowerCase()}#${subIssue.number}`,
-      subIssue,
-    ])).values()].sort((left, right) => (
-    left.repository.localeCompare(right.repository)
-    || left.number - right.number
-  ));
+  const subIssues = normalizeIssueReferences(rawSubIssues, repository);
+  const blockedBy = normalizeIssueReferences(issue.blocked_by, repository);
+  const blocking = normalizeIssueReferences(issue.blocking, repository);
   return {
     repository,
     number: Number(issue.number),
@@ -51,6 +57,14 @@ export function issueSnapshot(issue) {
       : Number(issue.sub_issue_count),
     sub_issue_numbers: subIssues.map((subIssue) => subIssue.number),
     sub_issues: subIssues,
+    blocked_by_count: issue.blocked_by_count == null
+      ? blockedBy.length
+      : Number(issue.blocked_by_count),
+    blocked_by: blockedBy,
+    blocking_count: issue.blocking_count == null
+      ? blocking.length
+      : Number(issue.blocking_count),
+    blocking,
   };
 }
 
@@ -71,6 +85,18 @@ export function analyzeIssue(issue) {
     blockers.push(blocker(
       "sub-issues-truncated",
       "The workflow could not snapshot every native sub-issue and must fail closed.",
+    ));
+  }
+  if (snapshot.blocked_by_count > snapshot.blocked_by.length) {
+    blockers.push(blocker(
+      "blocked-by-truncated",
+      "The workflow could not snapshot every native blocking prerequisite and must fail closed.",
+    ));
+  }
+  if (snapshot.blocking_count > snapshot.blocking.length) {
+    blockers.push(blocker(
+      "blocking-truncated",
+      "The workflow could not snapshot every natively blocked Issue and must fail closed.",
     ));
   }
 

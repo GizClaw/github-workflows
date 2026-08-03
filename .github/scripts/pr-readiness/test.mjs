@@ -46,6 +46,15 @@ const input = {
     issue_type: "Feature",
     sub_issue_numbers: [],
     sub_issues: [],
+    blocked_by_count: 2,
+    blocked_by: [
+      { repository: "GizClaw/example", number: 9, state: "OPEN" },
+      { repository: "Other/example", number: 30, state: "CLOSED" },
+    ],
+    blocking_count: 1,
+    blocking: [
+      { repository: "GizClaw/example", number: 20, state: "OPEN" },
+    ],
   }],
 };
 const context = {
@@ -88,6 +97,10 @@ const workflowSource = fs.readFileSync(
 );
 for (const source of [verifySource, workflowSource]) {
   assert.match(source, /closingIssuesReferences\(first: 100\)/);
+  assert.match(source, /blockedBy\(first: 100\)/);
+  assert.match(source, /blocking\(first: 100\)/);
+  assert.match(source, /blocked_by_count:\s*issue\.blockedBy\.totalCount/);
+  assert.match(source, /blocking_count:\s*issue\.blocking\.totalCount/);
   assert.doesNotMatch(source, /closingIssuesReferences\.nodes\s*\.slice\(/);
 }
 assert.deepEqual(context.readiness.deterministic_blockers, []);
@@ -240,6 +253,30 @@ assert.ok(blockerCodes(analyzePullRequest({
 })).includes("sub-issues-truncated"));
 assert.ok(blockerCodes(analyzePullRequest({
   ...input,
+  linked_issues: [{
+    ...input.linked_issues[0],
+    blocked_by_count: 101,
+    blocked_by: Array.from({ length: 100 }, (_, index) => ({
+      repository: input.repository,
+      number: index + 1,
+      state: "OPEN",
+    })),
+  }],
+})).includes("blocked-by-truncated"));
+assert.ok(blockerCodes(analyzePullRequest({
+  ...input,
+  linked_issues: [{
+    ...input.linked_issues[0],
+    blocking_count: 101,
+    blocking: Array.from({ length: 100 }, (_, index) => ({
+      repository: input.repository,
+      number: index + 1,
+      state: "OPEN",
+    })),
+  }],
+})).includes("blocking-truncated"));
+assert.ok(blockerCodes(analyzePullRequest({
+  ...input,
   linked_issue_count: 2,
 })).includes("too-many-closing-issues"));
 assert.ok(blockerCodes(analyzePullRequest({
@@ -306,6 +343,30 @@ assert.notEqual(
     linked_issues: [{
       ...input.linked_issues[0],
       body: `${issueBody}\nchanged`,
+    }],
+  }).snapshot_sha256,
+);
+assert.notEqual(
+  analyzePullRequest(input).snapshot_sha256,
+  analyzePullRequest({
+    ...input,
+    linked_issues: [{
+      ...input.linked_issues[0],
+      blocked_by: input.linked_issues[0].blocked_by.map(
+        (dependency, index) => index === 0
+          ? { ...dependency, state: "CLOSED" }
+          : dependency,
+      ),
+    }],
+  }).snapshot_sha256,
+);
+assert.notEqual(
+  analyzePullRequest(input).snapshot_sha256,
+  analyzePullRequest({
+    ...input,
+    linked_issues: [{
+      ...input.linked_issues[0],
+      blocked_by_count: input.linked_issues[0].blocked_by_count + 1,
     }],
   }).snapshot_sha256,
 );
@@ -441,6 +502,22 @@ try {
             issueType: { name: "Feature" },
             parent: null,
             subIssues: { totalCount: 0, nodes: [] },
+            blockedBy: {
+              totalCount: input.linked_issues[0].blocked_by_count,
+              nodes: input.linked_issues[0].blocked_by.map((dependency) => ({
+                repository: { nameWithOwner: dependency.repository },
+                number: dependency.number,
+                state: dependency.state,
+              })),
+            },
+            blocking: {
+              totalCount: input.linked_issues[0].blocking_count,
+              nodes: input.linked_issues[0].blocking.map((dependency) => ({
+                repository: { nameWithOwner: dependency.repository },
+                number: dependency.number,
+                state: dependency.state,
+              })),
+            },
           }],
         },
         reviewThreads: {
@@ -491,6 +568,22 @@ try {
           state: subIssue.state,
         })),
       },
+      blockedBy: {
+        totalCount: issue.blocked_by_count ?? 0,
+        nodes: (issue.blocked_by ?? []).map((dependency) => ({
+          repository: { nameWithOwner: dependency.repository },
+          number: dependency.number,
+          state: dependency.state,
+        })),
+      },
+      blocking: {
+        totalCount: issue.blocking_count ?? 0,
+        nodes: (issue.blocking ?? []).map((dependency) => ({
+          repository: { nameWithOwner: dependency.repository },
+          number: dependency.number,
+          state: dependency.state,
+        })),
+      },
     })),
   };
   fs.writeFileSync(fixtureFile, JSON.stringify(manyFixture));
@@ -531,6 +624,13 @@ try {
         state: "OPEN",
       }],
     };
+  });
+  assertStale((pullRequest) => {
+    pullRequest.closingIssuesReferences.nodes[0].blockedBy.nodes[0].state =
+      "CLOSED";
+  });
+  assertStale((pullRequest) => {
+    pullRequest.closingIssuesReferences.nodes[0].blocking.totalCount += 1;
   });
   assertStale((pullRequest) => {
     pullRequest.reviewThreads.nodes.push({

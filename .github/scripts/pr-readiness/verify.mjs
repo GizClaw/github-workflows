@@ -58,6 +58,22 @@ async function fetchPullRequest() {
                         state
                       }
                     }
+                    blockedBy(first: 100) {
+                      totalCount
+                      nodes {
+                        repository { nameWithOwner }
+                        number
+                        state
+                      }
+                    }
+                    blocking(first: 100) {
+                      totalCount
+                      nodes {
+                        repository { nameWithOwner }
+                        number
+                        state
+                      }
+                    }
                   }
                 }
                 reviewThreads(first: 100) {
@@ -112,6 +128,18 @@ const linkedIssues = pullRequest.closingIssuesReferences.nodes
     sub_issue_count: issue.subIssues.totalCount,
     sub_issue_numbers: issue.subIssues.nodes.map((item) => item.number),
     sub_issues: issue.subIssues.nodes.map((item) => ({
+      repository: item.repository.nameWithOwner,
+      number: item.number,
+      state: item.state,
+    })),
+    blocked_by_count: issue.blockedBy.totalCount,
+    blocked_by: issue.blockedBy.nodes.map((item) => ({
+      repository: item.repository.nameWithOwner,
+      number: item.number,
+      state: item.state,
+    })),
+    blocking_count: issue.blocking.totalCount,
+    blocking: issue.blocking.nodes.map((item) => ({
       repository: item.repository.nameWithOwner,
       number: item.number,
       state: item.state,

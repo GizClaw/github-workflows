@@ -140,6 +140,10 @@ The reviewer preserves every native closing Issue returned by GitHub's maximum
 100-node GraphQL page. It fails closed when `totalCount` exceeds the collected
 nodes, rather than silently reviewing a truncated relationship set. Native
 sub-issue snapshots use the same 100-node fail-closed bound.
+Each linked Issue also preserves its native `blockedBy` and `blocking`
+relationships, including repository, Issue number, and state. Both dependency
+directions use the same deterministic normalization and 100-node fail-closed
+bound, and their normalized state is part of the Issue and readiness hashes.
 
 Caller policy can add trusted organization-level constraints. Repository-owned
 title formats, Issue Types, sections, relationships, ownership rules,
