@@ -410,6 +410,22 @@ jobs:
                               state
                             }
                           }
+                          blockedBy(first: 100) {
+                            totalCount
+                            nodes {
+                              repository { nameWithOwner }
+                              number
+                              state
+                            }
+                          }
+                          blocking(first: 100) {
+                            totalCount
+                            nodes {
+                              repository { nameWithOwner }
+                              number
+                              state
+                            }
+                          }
                         }
                       }
                       reviewThreads(first: 100) {
@@ -467,6 +483,18 @@ jobs:
                       repository: subIssue.repository.nameWithOwner,
                       number: subIssue.number,
                       state: subIssue.state,
+                    })),
+                    blocked_by_count: issue.blockedBy.totalCount,
+                    blocked_by: issue.blockedBy.nodes.map((dependency) => ({
+                      repository: dependency.repository.nameWithOwner,
+                      number: dependency.number,
+                      state: dependency.state,
+                    })),
+                    blocking_count: issue.blocking.totalCount,
+                    blocking: issue.blocking.nodes.map((dependency) => ({
+                      repository: dependency.repository.nameWithOwner,
+                      number: dependency.number,
+                      state: dependency.state,
                     })),
                   })),
                 unresolved_openai_thread_count: pullRequest.reviewThreads.nodes
