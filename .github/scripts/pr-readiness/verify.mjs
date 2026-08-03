@@ -40,7 +40,7 @@ async function fetchPullRequest() {
                 body
                 baseRefOid
                 headRefOid
-                closingIssuesReferences(first: 20) {
+                closingIssuesReferences(first: 100) {
                   totalCount
                   nodes {
                     repository { nameWithOwner }
@@ -100,7 +100,6 @@ const data = await fetchPullRequest();
 const pullRequest = data.repository?.pullRequest;
 if (!pullRequest) throw new Error("Pull request was not found");
 const linkedIssues = pullRequest.closingIssuesReferences.nodes
-  .slice(0, 10)
   .map((issue) => ({
     repository: issue.repository.nameWithOwner,
     number: issue.number,

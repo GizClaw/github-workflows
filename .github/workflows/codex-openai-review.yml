@@ -392,7 +392,7 @@ jobs:
                     pullRequest(number: $number) {
                       title
                       body
-                      closingIssuesReferences(first: 20) {
+                      closingIssuesReferences(first: 100) {
                         totalCount
                         nodes {
                           repository { nameWithOwner }
@@ -449,7 +449,6 @@ jobs:
                 linked_issue_count:
                   pullRequest.closingIssuesReferences.totalCount,
                 linked_issues: pullRequest.closingIssuesReferences.nodes
-                  .slice(0, 10)
                   .map((issue) => ({
                     repository: issue.repository.nameWithOwner,
                     number: issue.number,
