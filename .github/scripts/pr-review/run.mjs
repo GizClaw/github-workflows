@@ -734,7 +734,15 @@ try {
     outputTokens: totals.output_tokens,
   });
 
-  appendOutput("review", JSON.stringify(review));
+  // Cross-job outputs are inspected by GitHub's secret scanner. Keep the
+  // publication payload to the fields consumed by readiness and publication;
+  // the complete stage evidence remains in aggregate-result.json and the
+  // encrypted Actions artifact.
+  appendOutput("review", JSON.stringify({
+    summary: review.summary,
+    findings: review.findings,
+    readiness: review.readiness,
+  }));
   appendOutput("session_id", sessionId);
   appendOutput("generation_key", generation.key);
   appendOutput("usage_available", "true");
