@@ -542,6 +542,19 @@ fs.writeFileSync(outputFile, JSON.stringify(
   assert.equal(completedLedger.generations.at(-1).status, "completed");
   assert.equal(completedLedger.generations.at(-1).aggregate.metrics.input_tokens, 100);
   const reviewOutputs = fs.readFileSync(reviewOutput, "utf8");
+  const reviewOutputLine = reviewOutputs
+    .split("\n")
+    .find((line) => line.startsWith("review="));
+  assert.ok(reviewOutputLine);
+  const publicReview = JSON.parse(reviewOutputLine.slice("review=".length));
+  assert.deepEqual(Object.keys(publicReview).sort(), [
+    "findings",
+    "readiness",
+    "summary",
+  ]);
+  assert.equal(publicReview.summary, "Fake code review complete.");
+  assert.deepEqual(publicReview.findings, []);
+  assert.equal(publicReview.readiness.verdict, "pass");
   assert.match(reviewOutputs, /^credits_available=true$/m);
   assert.match(reviewOutputs, /^estimated_credits=0\.044$/m);
   const usageOutput = reviewOutputs
