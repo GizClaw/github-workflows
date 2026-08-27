@@ -128,7 +128,9 @@ default-branch `AGENTS.md` hierarchy and the Issue-review documents it
 designates. The workflow itself enforces only cross-project integrity and PR
 linkage requirements:
 
-- PR titles use lowercase `prefix: Subject` form.
+- PR titles use lowercase `prefix: Subject` form. Each slash-separated prefix
+  segment starts with a lowercase letter and may then contain lowercase letters,
+  digits, hyphens, or underscores.
 - The PR body describes the delivered result and validation.
 - The PR has at least one same-repository native closing Issue from GraphQL
   `closingIssuesReferences`; text-only references do not count.

@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 
 export const ISSUE_REVIEW_SCHEMA_VERSION = 4;
-export const PREFIXED_TITLE = /^[a-z][a-z0-9-]*(?:\/[a-z][a-z0-9-]*)*: \S.*$/;
+export const PREFIXED_TITLE = /^[a-z][a-z0-9_-]*(?:\/[a-z][a-z0-9_-]*)*: \S.*$/;
 
 export function sha256(value) {
   return crypto.createHash("sha256").update(value).digest("hex");
