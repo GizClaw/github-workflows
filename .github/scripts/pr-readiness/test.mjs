@@ -108,12 +108,25 @@ assert.deepEqual(
   analyzePullRequest(manyLinkedIssuesInput).deterministic_blockers,
   [],
 );
+assert.ok(!blockerCodes(analyzePullRequest({
+  ...input,
+  title: "h106/zero_esp: add the Zero ESP Main App package",
+})).includes("invalid-title"));
 assert.ok(blockerCodes(analyzePullRequest({
   ...manyLinkedIssuesInput,
   linked_issue_count: manyLinkedIssues.length + 1,
 })).includes("too-many-closing-issues"));
-assert.ok(analyzePullRequest({ ...input, title: "Bad title" })
-  .deterministic_blockers.some((item) => item.code === "invalid-title"));
+for (const title of [
+  "Bad title",
+  "H106/zero_esp: add the Zero ESP Main App package",
+  "h106/_zero_esp: add the Zero ESP Main App package",
+  "h106//zero_esp: add the Zero ESP Main App package",
+  "h106/zero esp: add the Zero ESP Main App package",
+  "h106/zero_esp: ",
+]) {
+  assert.ok(analyzePullRequest({ ...input, title })
+    .deterministic_blockers.some((item) => item.code === "invalid-title"));
+}
 assert.ok(analyzePullRequest({ ...input, body: "" })
   .deterministic_blockers.some((item) => item.code === "missing-body"));
 assert.ok(analyzePullRequest({ ...input, body_truncated: true })
