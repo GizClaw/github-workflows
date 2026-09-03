@@ -531,10 +531,23 @@ jobs:
                 review_threads_truncated:
                   pullRequest.reviewThreads.pageInfo.hasNextPage,
                 trigger_comment_id: process.env.REQUEST_COMMENT_ID || null,
-                comments: comments.slice(-20).map((comment) => ({
-                  author: comment.user.login, association: comment.author_association,
-                  created_at: comment.created_at, body: clip(comment.body, 600),
-                })),
+                comments: comments.slice(-20).map((comment) => {
+                  const isTrigger = String(comment.id)
+                    === String(process.env.REQUEST_COMMENT_ID || '');
+                  const limit = isTrigger ? 8_000 : 2_000;
+                  return {
+                    id: String(comment.id),
+                    author: comment.user.login,
+                    author_is_bot: comment.user.type === 'Bot'
+                      || /\[bot\]$/i.test(comment.user.login || ''),
+                    association: comment.author_association,
+                    created_at: comment.created_at,
+                    is_trigger: isTrigger,
+                    body: clip(comment.body, limit),
+                    body_truncated:
+                      String(comment.body ?? '').length > limit,
+                  };
+                }),
               };
               fs.writeFileSync(process.env.PR_CONTEXT_FILE, JSON.stringify(discussion), 'utf8');
               core.exportVariable('PR_CONTEXT_FILE', process.env.PR_CONTEXT_FILE);

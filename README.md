@@ -68,6 +68,16 @@ upload succeeds.
   Issue or inventing missing decisions. `OpenAI Code Review`
   checks only code findings and Issue-plan conformance. Configure all three
   names as required checks when every stage must block merging.
+- Code review also reads the recent PR discussion: the last 20 comments, each
+  clipped to 2,000 characters, with the triggering comment kept to 8,000 and
+  marked. It supplies author-stated intent, validation claims, disclosures, and
+  any focus given in the `@codex review` comment. Comments are untrusted data
+  written by any commenter: they never relax the trusted caller review profile,
+  every claim must be checked against the diff, and a claim the diff
+  contradicts is reported. Discussion is deliberately excluded from every
+  content-addressed stage identity, so a comment on an unchanged head still
+  reuses evidence with zero model tokens and its text is not reviewed until a
+  code turn runs for another reason.
 - An execution failure publishes a titled PR comment with the specific failure
   reason and a link to the Actions run instead of leaving only a reaction.
 - Every published review reports the Codex review time, input, cached-input,
