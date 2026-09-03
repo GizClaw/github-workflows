@@ -34,9 +34,14 @@ upload succeeds.
   external fork.
 - Recalculates open PRs that natively close an Issue when that Issue is edited,
   reopened, typed, or untyped, using the same caller and reusable PR reviewer.
-- A commenter can request a fresh review of an internal or fork PR using
-  `@codex` or `@codex review <focus>`. Apply repository and API-project usage
-  limits appropriate for a public trigger.
+- A commenter can request a fresh review of an internal or fork PR by putting
+  `@codex` or `@codex review <focus>` on its own line anywhere in a PR comment,
+  so a comment that explains the push and ends with the request is accepted.
+  The whole line must be the request: a mention inside a sentence, an
+  unrecognized word after `@codex`, or a mention inside a fenced code block,
+  an inline code span, an indented code block, or a block quote does not start
+  a review, and neither does a comment authored by an app. Apply repository and
+  API-project usage limits appropriate for a public trigger.
 - **Run workflow** accepts a pull-request number as a manual fallback.
 - A new request for the same PR cancels the previous one. Request comments use
   `👀` while running, `🚀` when finished (including a failed attempt), and `😕`

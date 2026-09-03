@@ -97,10 +97,33 @@ jobs:
       head_sha: ${{ steps.pr.outputs.head_sha }}
       request_comment_id: ${{ steps.pr.outputs.request_comment_id }}
     steps:
+      - name: Check out the exact comment-trigger implementation
+        if: github.event_name == 'issue_comment'
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .openai-pr-review-trigger-source
+          sparse-checkout: |
+            .github/scripts/review-request
+          persist-credentials: false
+
+      - name: Evaluate the comment review request
+        id: request
+        if: github.event_name == 'issue_comment'
+        env:
+          COMMENT_BODY: ${{ github.event.comment.body }}
+          COMMENT_USER_TYPE: ${{ github.event.comment.user.type }}
+          COMMENT_USER_LOGIN: ${{ github.event.comment.user.login }}
+        run: >-
+          node
+          .openai-pr-review-trigger-source/.github/scripts/review-request/evaluate.mjs
+
       - id: pr
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         env:
           REQUESTED_PULL_NUMBER: ${{ inputs.pull_request_number }}
+          COMMENT_REVIEW_REQUESTED: ${{ steps.request.outputs.requested }}
         with:
           script: |
             const event = context.eventName;
@@ -113,8 +136,7 @@ jobs:
               number = context.payload.pull_request.number;
             } else if (event === 'issue_comment') {
               if (!context.payload.issue.pull_request) return core.setOutput('eligible', 'false');
-              const command = context.payload.comment.body.trim();
-              if (!/^@codex(?:\s+review(?:\s+[\s\S]+)?)?\s*$/i.test(command)) return core.setOutput('eligible', 'false');
+              if (process.env.COMMENT_REVIEW_REQUESTED !== 'true') return core.setOutput('eligible', 'false');
               number = context.payload.issue.number;
               requestCommentId = String(context.payload.comment.id);
             } else if (event === 'workflow_dispatch') {
