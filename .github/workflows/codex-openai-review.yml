@@ -1151,8 +1151,30 @@ jobs:
           script: |
             const maxCommentLength = 60_000;
             const maxFindingLength = 12_000;
-            const review = JSON.parse(process.env.REVIEW);
-            const readiness = JSON.parse(process.env.READINESS_EVIDENCE);
+            // A job output is withheld when its value matches a repository or
+            // organization secret, which leaves the variable empty here. Report
+            // that instead of dying inside JSON.parse with a bare SyntaxError.
+            const requirePayload = (name) => {
+              const raw = process.env[name] ?? '';
+              if (raw.trim() === '') {
+                const reason = `The review job produced no ${name} payload. GitHub withholds a job output whose value matches a registered secret; check the review job log for "Skip output".`;
+                core.setOutput('failure_reason', reason);
+                core.setFailed(reason);
+                return undefined;
+              }
+              try {
+                return JSON.parse(raw);
+              } catch (error) {
+                const reason = `The ${name} payload was not valid JSON: ${error.message}`;
+                core.setOutput('failure_reason', reason);
+                core.setFailed(reason);
+                return undefined;
+              }
+            };
+            const review = requirePayload('REVIEW');
+            if (review === undefined) return;
+            const readiness = requirePayload('READINESS_EVIDENCE');
+            if (readiness === undefined) return;
             const count = (value) => Number(value || 0).toLocaleString('en-US');
             const duration = (value) => {
               const seconds = Math.max(0, Number(value || 0));
