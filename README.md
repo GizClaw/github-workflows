@@ -34,9 +34,15 @@ upload succeeds.
   external fork.
 - Recalculates open PRs that natively close an Issue when that Issue is edited,
   reopened, typed, or untyped, using the same caller and reusable PR reviewer.
-- A commenter can request a fresh review of an internal or fork PR using
-  `@codex` or `@codex review <focus>`. Apply repository and API-project usage
-  limits appropriate for a public trigger.
+- A commenter can request a fresh review of an internal or fork PR by putting
+  `@codex` or `@codex review <focus>` on its own line anywhere in a PR comment,
+  so a comment that explains the push and ends with the request is accepted.
+  The whole line must be the request: a mention inside a sentence, an
+  unrecognized word after `@codex`, or a mention inside a fenced code block,
+  an inline code span (including one that crosses line breaks), an indented
+  code block, or a block quote does not start a review, and neither does a
+  comment authored by an app. Apply repository and
+  API-project usage limits appropriate for a public trigger.
 - **Run workflow** accepts a pull-request number as a manual fallback.
 - A new request for the same PR cancels the previous one. Request comments use
   `👀` while running, `🚀` when finished (including a failed attempt), and `😕`
@@ -63,6 +69,16 @@ upload succeeds.
   Issue or inventing missing decisions. `OpenAI Code Review`
   checks only code findings and Issue-plan conformance. Configure all three
   names as required checks when every stage must block merging.
+- Code review also reads the recent PR discussion: the last 20 comments, each
+  clipped to 2,000 characters, with the triggering comment kept to 8,000,
+  marked, and restored if newer comments crowd it out of that window. It supplies author-stated intent, validation claims, disclosures, and
+  any focus given in the `@codex review` comment. Comments are untrusted data
+  written by any commenter: they never relax the trusted caller review profile,
+  every claim must be checked against the diff, and a claim the diff
+  contradicts is reported. Discussion is deliberately excluded from every
+  content-addressed stage identity, so a comment on an unchanged head still
+  reuses evidence with zero model tokens and its text is not reviewed until a
+  code turn runs for another reason.
 - An execution failure publishes a titled PR comment with the specific failure
   reason and a link to the Actions run instead of leaving only a reaction.
 - Every published review reports the Codex review time, input, cached-input,
