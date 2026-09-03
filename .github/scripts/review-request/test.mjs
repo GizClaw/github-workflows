@@ -55,6 +55,31 @@ const cases = [
     false,
   ],
   ["command inside an indented code block", "    @codex review", false],
+  [
+    "command inside a code span that crosses line breaks",
+    "`example\n@codex review\nexample`",
+    false,
+  ],
+  [
+    "command inside a multi-line double-backtick span",
+    "See ``example\n@codex review\nexample`` above.",
+    false,
+  ],
+  [
+    "command after a code span closed on a later line",
+    "`example\nexample`\n\n@codex review",
+    true,
+  ],
+  [
+    "command after an unmatched backtick in an earlier paragraph",
+    "Use a ` to quote it.\n\n@codex review",
+    true,
+  ],
+  [
+    "command after an unmatched backtick in the same paragraph",
+    "Use a ` to quote it.\n@codex review",
+    true,
+  ],
   ["command inside a block quote", "> @codex review\n\nAlready done.", false],
   ["unrelated text", "Looks good to me, merging once CI is green.", false],
   ["unrelated mention of the reviewer", "The codex review passed.", false],
@@ -103,6 +128,17 @@ assert.equal(
   stripQuotedText(["```", "@codex", "```", "review"].join("\n")),
   "\n\n\nreview",
 );
+
+// A code span blanks its own characters and keeps every newline, so the line
+// after a multi-line span stays on its own line.
+assert.equal(
+  stripQuotedText("`a\n@codex review\nb`\nreview"),
+  "  \n             \n  \nreview",
+);
+
+// A stray backtick must not blank the rest of the comment: the span search
+// stops at the paragraph break, as CommonMark requires.
+assert.equal(stripQuotedText("a `\n\n@codex"), "a `\n\n@codex");
 
 // Carriage returns from the GitHub comment API do not defeat the line anchors.
 assert.equal(isReviewRequestComment({ body: "Done.\r\n@codex review\r\n" }), true);

@@ -476,6 +476,22 @@ jobs:
                 owner: context.repo.owner, repo: context.repo.repo,
                 issue_number: Number(process.env.PULL_REQUEST_NUMBER), per_page: 100,
               });
+              // The request keeps its own budget only if it survives the
+              // window, so it is restored when newer comments crowd it out.
+              const triggerCommentId = String(
+                process.env.REQUEST_COMMENT_ID || '',
+              );
+              const recentComments = comments.slice(-20);
+              const triggerComment = triggerCommentId
+                && comments.find(
+                  (comment) => String(comment.id) === triggerCommentId,
+                );
+              const selectedComments = triggerComment
+                && !recentComments.some(
+                  (comment) => String(comment.id) === triggerCommentId,
+                )
+                ? [triggerComment, ...recentComments]
+                : recentComments;
               const discussion = {
                 repository: data.repository.nameWithOwner,
                 pull_request: {
@@ -531,9 +547,8 @@ jobs:
                 review_threads_truncated:
                   pullRequest.reviewThreads.pageInfo.hasNextPage,
                 trigger_comment_id: process.env.REQUEST_COMMENT_ID || null,
-                comments: comments.slice(-20).map((comment) => {
-                  const isTrigger = String(comment.id)
-                    === String(process.env.REQUEST_COMMENT_ID || '');
+                comments: selectedComments.map((comment) => {
+                  const isTrigger = String(comment.id) === triggerCommentId;
                   const limit = isTrigger ? 8_000 : 2_000;
                   return {
                     id: String(comment.id),

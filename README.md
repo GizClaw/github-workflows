@@ -39,8 +39,9 @@ upload succeeds.
   so a comment that explains the push and ends with the request is accepted.
   The whole line must be the request: a mention inside a sentence, an
   unrecognized word after `@codex`, or a mention inside a fenced code block,
-  an inline code span, an indented code block, or a block quote does not start
-  a review, and neither does a comment authored by an app. Apply repository and
+  an inline code span (including one that crosses line breaks), an indented
+  code block, or a block quote does not start a review, and neither does a
+  comment authored by an app. Apply repository and
   API-project usage limits appropriate for a public trigger.
 - **Run workflow** accepts a pull-request number as a manual fallback.
 - A new request for the same PR cancels the previous one. Request comments use
@@ -69,8 +70,8 @@ upload succeeds.
   checks only code findings and Issue-plan conformance. Configure all three
   names as required checks when every stage must block merging.
 - Code review also reads the recent PR discussion: the last 20 comments, each
-  clipped to 2,000 characters, with the triggering comment kept to 8,000 and
-  marked. It supplies author-stated intent, validation claims, disclosures, and
+  clipped to 2,000 characters, with the triggering comment kept to 8,000,
+  marked, and restored if newer comments crowd it out of that window. It supplies author-stated intent, validation claims, disclosures, and
   any focus given in the `@codex review` comment. Comments are untrusted data
   written by any commenter: they never relax the trusted caller review profile,
   every claim must be checked against the diff, and a claim the diff
