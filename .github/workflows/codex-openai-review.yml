@@ -94,6 +94,7 @@ jobs:
       eligible: ${{ steps.pr.outputs.eligible }}
       number: ${{ steps.pr.outputs.number }}
       base_sha: ${{ steps.pr.outputs.base_sha }}
+      base_ref: ${{ steps.pr.outputs.base_ref }}
       head_sha: ${{ steps.pr.outputs.head_sha }}
       request_comment_id: ${{ steps.pr.outputs.request_comment_id }}
     steps:
@@ -160,6 +161,7 @@ jobs:
             core.setOutput('eligible', String(eligible));
             core.setOutput('number', String(pr.number));
             core.setOutput('base_sha', pr.base.sha);
+            core.setOutput('base_ref', pr.base.ref);
             core.setOutput('head_sha', pr.head.sha);
             core.setOutput('request_comment_id', requestCommentId);
 
@@ -317,6 +319,7 @@ jobs:
     env:
       PULL_REQUEST_NUMBER: ${{ needs.resolve.outputs.number }}
       PR_BASE_SHA: ${{ needs.resolve.outputs.base_sha }}
+      PR_BASE_REF: ${{ needs.resolve.outputs.base_ref }}
       PR_HEAD_SHA: ${{ needs.resolve.outputs.head_sha }}
       REQUEST_COMMENT_ID: ${{ needs.resolve.outputs.request_comment_id }}
       SESSION_KEY: repo-${{ github.repository_id }}-pr-${{ needs.resolve.outputs.number }}-v2
@@ -369,9 +372,10 @@ jobs:
             -c "http.extraheader=AUTHORIZATION: basic $basic_auth" \
             fetch --no-tags origin \
             "+$PR_BASE_SHA:refs/openai-pr-review/base" \
+            "+refs/heads/$PR_BASE_REF:refs/openai-pr-review/base-tip" \
             "+refs/pull/$PULL_REQUEST_NUMBER/head:$REVIEW_HEAD_REF"
           then
-            reason="Could not fetch the exact pull-request base and head objects."
+            reason="Could not fetch the exact pull-request base, base branch, and head objects."
             echo "failure_reason=$reason" >> "$GITHUB_OUTPUT"
             echo "::error title=PR object fetch failed::$reason"
             exit 1
@@ -392,6 +396,13 @@ jobs:
             echo "::error title=PR head changed::$reason"
             exit 1
           fi
+          # The live base branch tip decides the merge base the diff starts
+          # from; pull_request.base.sha stays at the base commit recorded when
+          # the head was last pushed and would count base-branch commits merged
+          # into the head as pull-request changes.
+          base_tip_sha="$(git --git-dir="$PR_DIFF_REPOSITORY" \
+            rev-parse "refs/openai-pr-review/base-tip^{commit}")"
+          echo "PR_BASE_TIP_SHA=$base_tip_sha" >> "$GITHUB_ENV"
 
       - name: Collect untrusted pull-request discussion context
         id: context
