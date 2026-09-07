@@ -1000,6 +1000,8 @@ fs.writeFileSync(outputFile, JSON.stringify(
     changedAggregateInput.linked_issue_evidence[0].change.mode,
     "incremental",
   );
+  assert.equal(changedAggregateInput.generation.mode, "incremental");
+  assert.ok(changedAggregateInput.previous_code_review);
   assert.deepEqual(
     issueChangedUsage.turns.map((turn) => [turn.stage, turn.mode]),
     [
@@ -1009,6 +1011,104 @@ fs.writeFileSync(outputFile, JSON.stringify(
       ["code", "incremental"],
     ],
   );
+
+  // Merging the moved base branch into the pull request starts a full
+  // generation from the new merge base. Its aggregation must not be offered
+  // the previous code review: those findings described the earlier range and
+  // could otherwise survive as "still applicable" against a diff that no
+  // longer contains their subject.
+  run("checkout", "-q", "-b", "moved-base", base);
+  fs.writeFileSync(path.join(repo, "base-only.txt"), "landed on the base branch\n");
+  run("add", "base-only.txt");
+  run("commit", "-qm", "base branch moves");
+  const movedBase = spawnSync("git", ["rev-parse", "HEAD"], {
+    cwd: repo, encoding: "utf8",
+  }).stdout.trim();
+  run("checkout", "-q", "-");
+  run("merge", "-q", "--no-edit", "moved-base");
+  fs.appendFileSync(path.join(repo, "large.txt"), "after the merge\n");
+  run("add", "large.txt");
+  run("commit", "-qm", "pull request work after the merge");
+  const mergedPrHead = spawnSync("git", ["rev-parse", "HEAD"], {
+    cwd: repo, encoding: "utf8",
+  }).stdout.trim();
+  const fullPrepare = spawnSync(process.execPath, [
+    path.join(path.dirname(new URL(import.meta.url).pathname), "prepare.mjs"),
+  ], {
+    cwd: repo,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      REPOSITORY_DIR: repo,
+      PR_REVIEW_STATE_DIR: state,
+      PR_BASE_SHA: base,
+      PR_BASE_TIP_SHA: movedBase,
+      PR_HEAD_SHA: mergedPrHead,
+      SESSION_KEY: "repo:1:pr:2:v2",
+      MAX_DIFF_BYTES: "1000000",
+      CHUNK_TARGET_BYTES: "600",
+      READINESS_CONTEXT_SHA256: "context-v1",
+    },
+  });
+  assert.equal(fullPrepare.status, 0, fullPrepare.stderr);
+  const fullLedger = JSON.parse(fs.readFileSync(
+    path.join(state, "review-ledger.json"),
+    "utf8",
+  ));
+  const fullGeneration = fullLedger.generations.at(-1);
+  assert.equal(fullGeneration.mode, "full");
+  assert.equal(fullGeneration.from_sha, movedBase);
+  const fullContext = JSON.parse(fs.readFileSync(contextFile, "utf8"));
+  fullContext.readiness.snapshot.head_sha = mergedPrHead;
+  fs.writeFileSync(contextFile, `${JSON.stringify(fullContext, null, 2)}\n`);
+  const fullOutput = path.join(temporary, "full-review-output");
+  const fullRun = spawnSync(process.execPath, [
+    path.join(path.dirname(new URL(import.meta.url).pathname), "run.mjs"),
+  ], {
+    cwd: repo,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      PATH: `${fakeBin}${path.delimiter}${process.env.PATH}`,
+      GITHUB_OUTPUT: fullOutput,
+      RESUMED_SESSION_ID: "019f0000-0000-7000-8000-000000000001",
+      PR_REVIEW_STATE_DIR: state,
+      CODEX_HOME: codexHome,
+      REPOSITORY_DIR: repo,
+      PR_CONTEXT_FILE: contextFile,
+      REVIEW_OUTPUT_SCHEMA: path.join(
+        path.dirname(new URL(import.meta.url).pathname),
+        "review-output-schema.json",
+      ),
+      STAGE_OUTPUT_SCHEMA: path.join(
+        path.dirname(new URL(import.meta.url).pathname),
+        "stage-output-schema.json",
+      ),
+      GENERATION_KEY: fullGeneration.key,
+      MODEL: "gpt-5.6-terra",
+      EFFORT: "medium",
+      WORKFLOW_SOURCE_SHA: "a".repeat(40),
+      REVIEW_INSTRUCTIONS: "Review the diff.",
+      ISSUE_REVIEW_INSTRUCTIONS: "Review the Issue.",
+      PR_REVIEW_INSTRUCTIONS: "Review PR readiness.",
+    },
+  });
+  assert.equal(fullRun.status, 0, fullRun.stderr);
+  const fullAggregateInput = JSON.parse(fs.readFileSync(path.join(
+    state,
+    "generations",
+    fullGeneration.key,
+    "aggregate-input.json",
+  ), "utf8"));
+  assert.equal(fullAggregateInput.generation.mode, "full");
+  assert.equal(fullAggregateInput.previous_code_review, null);
+  const fullListing = JSON.parse(fs.readFileSync(path.join(
+    state,
+    "generations",
+    fullGeneration.key,
+    "listing.json",
+  ), "utf8"));
+  assert.deepEqual(fullListing.files.map((file) => file.path), ["large.txt"]);
 } finally {
   fs.rmSync(temporary, { recursive: true, force: true });
 }
