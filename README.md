@@ -214,7 +214,17 @@ stage modes below describe model work and evidence reuse inside that run.
 | Edit only the PR body | `incremental` field diff | `reused` | `reused` | All three, with only PR metadata re-reviewed |
 | Edit one linked Issue | `reused` | `incremental` for that Issue; others `reused` | `incremental` plan-conformance aggregation with no repeated complete code diff | All three, with Issue and Code verdicts revalidated |
 | Push a descendant commit | `reused` | `reused` | `incremental` from the last completed head | All three on the new head |
+| Merge the moved base branch into the PR | `reused` | `reused` | `full` from the new merge base; base-branch commits are never reviewed as PR changes | All three on the merge commit |
 | Rerun an unchanged head | deterministic checks plus `reused` | `reused` | `reused` | All three with zero model tokens |
+
+The code diff always starts at the merge base between the live base branch
+tip and the PR head, matching the PR's own "Files changed" view.
+`pull_request.base.sha` stays at the base commit recorded when the head was
+last pushed, so it is only used to check out trusted reviewer code, never to
+decide what counts as a PR change. A base branch that moves without being
+merged keeps the merge base and reuses evidence; merging it moves the merge
+base and starts a fresh full code review so base-branch commits do not appear
+as pull-request changes.
 
 An Issue edit revalidates plan conformance without resending an unchanged
 complete code diff. A runtime, model, or trusted-policy change intentionally

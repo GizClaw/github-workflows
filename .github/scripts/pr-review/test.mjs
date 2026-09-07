@@ -566,6 +566,104 @@ try {
   assert.equal(updatedLedger.generations.at(-1).mode, "incremental");
   assert.equal(updatedLedger.generations.at(-1).from_sha, head);
   assert.equal(updatedLedger.generations.at(-1).to_sha, nextHead);
+  assert.equal(updatedLedger.generations.at(-1).merge_base_sha, base);
+
+  // Merging a moved base branch into the pull request must not present the
+  // base branch's own commits as pull-request changes: the merge base moves,
+  // so the next generation is a full review from the new merge base whose
+  // listing excludes the base-only file. The recorded base sha stays stale on
+  // purpose, mirroring pull_request.base.sha. This runs on copies so the
+  // original checkpoint chain below is untouched.
+  const mergedRepo = path.join(temporary, "merged-repo");
+  const mergedState = path.join(temporary, "merged-state");
+  assert.equal(spawnSync("git", ["clone", "-q", repo, mergedRepo], {
+    encoding: "utf8",
+  }).status, 0);
+  fs.cpSync(state, mergedState, { recursive: true });
+  const runMerged = (...args) => {
+    const result = spawnSync("git", args, { cwd: mergedRepo, encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim();
+  };
+  runMerged("config", "user.name", "Review Test");
+  runMerged("config", "user.email", "review@example.com");
+  const mergedLedgerBefore = JSON.parse(fs.readFileSync(
+    path.join(mergedState, "review-ledger.json"),
+    "utf8",
+  ));
+  mergedLedgerBefore.generations.at(-1).status = "completed";
+  mergedLedgerBefore.generations.at(-1).completed_at = new Date().toISOString();
+  fs.writeFileSync(
+    path.join(mergedState, "review-ledger.json"),
+    `${JSON.stringify(mergedLedgerBefore, null, 2)}\n`,
+  );
+  runMerged("checkout", "-q", "-b", "base-branch", base);
+  fs.writeFileSync(path.join(mergedRepo, "base-only.txt"), "landed on the base branch\n");
+  runMerged("add", "base-only.txt");
+  runMerged("commit", "-qm", "base branch moves");
+  const baseTip = runMerged("rev-parse", "HEAD");
+  runMerged("checkout", "-q", "-");
+  runMerged("merge", "-q", "--no-edit", "base-branch");
+  const mergedHead = runMerged("rev-parse", "HEAD");
+  const mergedEnv = {
+    ...process.env,
+    REPOSITORY_DIR: mergedRepo,
+    PR_REVIEW_STATE_DIR: mergedState,
+    PR_BASE_SHA: base,
+    PR_BASE_TIP_SHA: baseTip,
+    PR_HEAD_SHA: mergedHead,
+    SESSION_KEY: "repo:1:pr:2:v2",
+    MAX_DIFF_BYTES: "1000000",
+    CHUNK_TARGET_BYTES: "600",
+    READINESS_CONTEXT_SHA256: "context-v1",
+  };
+  const merged = spawnSync(process.execPath, [
+    path.join(path.dirname(new URL(import.meta.url).pathname), "prepare.mjs"),
+  ], { cwd: mergedRepo, encoding: "utf8", env: mergedEnv });
+  assert.equal(merged.status, 0, merged.stderr);
+  const mergedLedger = JSON.parse(fs.readFileSync(
+    path.join(mergedState, "review-ledger.json"),
+    "utf8",
+  ));
+  const mergedGeneration = mergedLedger.generations.at(-1);
+  assert.equal(mergedGeneration.mode, "full");
+  assert.equal(mergedGeneration.merge_base_sha, baseTip);
+  assert.equal(mergedGeneration.from_sha, baseTip);
+  assert.equal(mergedGeneration.to_sha, mergedHead);
+  assert.equal(mergedGeneration.base_sha, base);
+  assert.equal(mergedGeneration.base_tip_sha, baseTip);
+  const mergedListing = JSON.parse(fs.readFileSync(
+    path.join(mergedState, "generations", mergedGeneration.key, "listing.json"),
+    "utf8",
+  ));
+  assert.deepEqual(mergedListing.files.map((file) => file.path), ["large.txt"]);
+  assert.deepEqual(Object.keys(mergedListing.effective_added_line_ranges), ["large.txt"]);
+
+  // A base branch that moves again without being merged keeps the merge base,
+  // so an unchanged head reuses the completed generation.
+  mergedGeneration.status = "completed";
+  mergedGeneration.completed_at = new Date().toISOString();
+  fs.writeFileSync(
+    path.join(mergedState, "review-ledger.json"),
+    `${JSON.stringify(mergedLedger, null, 2)}\n`,
+  );
+  runMerged("checkout", "-q", "base-branch");
+  fs.appendFileSync(path.join(mergedRepo, "base-only.txt"), "moves again\n");
+  runMerged("add", "base-only.txt");
+  runMerged("commit", "-qm", "base branch moves again");
+  const movedBaseTip = runMerged("rev-parse", "HEAD");
+  runMerged("checkout", "-q", "-");
+  const baseMoveOutput = path.join(temporary, "base-move-output.txt");
+  fs.writeFileSync(baseMoveOutput, "");
+  const reusedAfterBaseMove = spawnSync(process.execPath, [
+    path.join(path.dirname(new URL(import.meta.url).pathname), "prepare.mjs"),
+  ], {
+    cwd: mergedRepo,
+    encoding: "utf8",
+    env: { ...mergedEnv, GITHUB_OUTPUT: baseMoveOutput, PR_BASE_TIP_SHA: movedBaseTip },
+  });
+  assert.equal(reusedAfterBaseMove.status, 0, reusedAfterBaseMove.stderr);
+  assert.match(fs.readFileSync(baseMoveOutput, "utf8"), /^mode=reused$/m);
 
   const fakeBin = path.join(temporary, "bin");
   const codexHome = path.join(temporary, "codex-home");

@@ -38,6 +38,12 @@ const positiveInteger = (name) => {
 const repo = required("REPOSITORY_DIR");
 const stateDir = required("PR_REVIEW_STATE_DIR");
 const baseSha = required("PR_BASE_SHA");
+// The live tip of the base branch. GitHub keeps pull_request.base.sha at the
+// base commit recorded when the head was last pushed, so after the base branch
+// moves and the pull request merges it back in, that stale commit is no longer
+// an ancestor of every base change inside the head. Diffing from the merge
+// base with the live tip reproduces the pull request's own "Files changed".
+const baseTipSha = process.env.PR_BASE_TIP_SHA || baseSha;
 const headSha = required("PR_HEAD_SHA");
 const sessionKey = required("SESSION_KEY");
 const readinessContextSha256 = required("READINESS_CONTEXT_SHA256");
@@ -75,7 +81,8 @@ const diffArgs = (from, to, tripleDot = false) => [
   `${from}${tripleDot ? "..." : ".."}${to}`,
 ];
 
-const fullDiff = Buffer.from(git(repo, diffArgs(baseSha, headSha, true), {
+const mergeBase = String(git(repo, ["merge-base", baseTipSha, headSha])).trim();
+const fullDiff = Buffer.from(git(repo, diffArgs(mergeBase, headSha), {
   encoding: null,
 }));
 if (fullDiff.length > maxDiffBytes) {
@@ -84,7 +91,6 @@ if (fullDiff.length > maxDiffBytes) {
   );
 }
 const effectiveDiffSha256 = sha256(fullDiff);
-const mergeBase = String(git(repo, ["merge-base", baseSha, headSha])).trim();
 
 const completed = ledger.generations
   .filter((generation) => generation.status === "completed")
@@ -95,7 +101,7 @@ let rangeTripleDot = true;
 if (
   completed
   && completed.to_sha === headSha
-  && completed.base_sha === baseSha
+  && completed.merge_base_sha === mergeBase
   && completed.effective_diff_sha256 === effectiveDiffSha256
   && completed.readiness_context_sha256 === readinessContextSha256
 ) {
@@ -107,8 +113,12 @@ if (
   appendOutput("reused", "true");
   process.exit(0);
 }
+// A two-dot range from the last reviewed head only describes pull-request
+// work while the merge base is unchanged. Once the base branch is merged into
+// the head, that range would present base-branch commits as pull-request
+// changes, so the review starts again from the new merge base instead.
 let completedIsAncestor = false;
-if (completed && completed.base_sha === baseSha) {
+if (completed && completed.merge_base_sha === mergeBase) {
   try {
     git(repo, [
       "merge-base", "--is-ancestor", completed.to_sha, headSha,
@@ -131,6 +141,7 @@ const generationIdentity = {
   session_key: sessionKey,
   mode,
   base_sha: baseSha,
+  base_tip_sha: baseTipSha,
   merge_base_sha: mergeBase,
   from_sha: fromSha,
   to_sha: headSha,
@@ -319,8 +330,8 @@ for (const record of deltaRecords) {
 }
 
 const effectiveAddedLines = {};
-for (const record of parseNameStatus(baseSha, headSha, true)) {
-  const patchText = filePatch(record, baseSha, headSha, true);
+for (const record of parseNameStatus(mergeBase, headSha)) {
+  const patchText = filePatch(record, mergeBase, headSha);
   effectiveAddedLines[record.path] = addedLines(patchText);
 }
 
