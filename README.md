@@ -224,7 +224,10 @@ last pushed, so it is only used to check out trusted reviewer code, never to
 decide what counts as a PR change. A base branch that moves without being
 merged keeps the merge base and reuses evidence; merging it moves the merge
 base and starts a fresh full code review so base-branch commits do not appear
-as pull-request changes.
+as pull-request changes. A full generation aggregates only its own chunk
+reviews; the previous code review is offered for preservation to incremental
+generations alone, so findings about an earlier range cannot outlive the diff
+that produced them.
 
 An Issue edit revalidates plan conformance without resending an unchanged
 complete code diff. A runtime, model, or trusted-policy change intentionally
