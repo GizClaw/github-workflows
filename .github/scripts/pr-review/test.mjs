@@ -753,15 +753,27 @@ fs.appendFileSync(sessionFile, JSON.stringify({
     }}
   }
 }) + "\\n");
-fs.writeFileSync(outputFile, JSON.stringify(
-  schemaFile.endsWith("stage-output-schema.json")
+const prompt = fs.readFileSync(0, "utf8");
+if (process.env.FAKE_PROMPT) fs.writeFileSync(process.env.FAKE_PROMPT, prompt);
+const turn = path.basename(outputFile);
+if (process.env.FAKE_TRACE) fs.appendFileSync(process.env.FAKE_TRACE, turn + "\\n");
+const result = schemaFile.endsWith("stage-output-schema.json")
     ? { summary: "Fake stage review complete.", blockers: [] }
     : {
         summary: "Fake code review complete.",
         findings: [],
         readiness: { verdict: "pass", blockers: [] }
-      }
-));
+      };
+result.execution = { status: "completed", reason: "" };
+if (process.env.FAKE_FAILURE === turn ||
+    (process.env.FAKE_FAILURE === "issue" && turn.startsWith("stage-issue-"))) {
+  result.execution = { status: "incomplete", reason: "Required input could not be read" };
+}
+if (process.env.FAKE_FAILURE === "missing-status") delete result.execution;
+if (process.env.FAKE_BLOCKER && turn === "stage-pr.json") {
+  result.blockers = [{ code: "scope-mismatch", title: "Scope mismatch", body: "The body describes a different change." }];
+}
+fs.writeFileSync(outputFile, JSON.stringify(result));
 `, { mode: 0o755 });
   const latestGeneration = updatedLedger.generations.at(-1);
   fs.rmSync(path.join(
@@ -770,6 +782,127 @@ fs.writeFileSync(outputFile, JSON.stringify(
     latestGeneration.key,
     "results",
   ), { recursive: true });
+  const recoveryEnv = {
+    ...process.env,
+    PATH: `${fakeBin}${path.delimiter}${process.env.PATH}`,
+    GITHUB_OUTPUT: reviewOutput,
+    PR_REVIEW_STATE_DIR: state,
+    CODEX_HOME: codexHome,
+    REPOSITORY_DIR: repo,
+    PR_CONTEXT_FILE: contextFile,
+    REVIEW_OUTPUT_SCHEMA: path.join(
+      path.dirname(new URL(import.meta.url).pathname),
+      "review-output-schema.json",
+    ),
+    STAGE_OUTPUT_SCHEMA: path.join(
+      path.dirname(new URL(import.meta.url).pathname),
+      "stage-output-schema.json",
+    ),
+    GENERATION_KEY: latestGeneration.key,
+    MODEL: "gpt-5.6-terra",
+    EFFORT: "medium",
+    WORKFLOW_SOURCE_SHA: "a".repeat(40),
+    REVIEW_INSTRUCTIONS: "Review the diff.",
+    ISSUE_REVIEW_INSTRUCTIONS: "Review the Issue.",
+    PR_REVIEW_INSTRUCTIONS: "Review PR readiness.",
+  };
+  // Each injected failure must fail closed, checkpoint only earlier completed
+  // work, and run the failed turn again on a new same-head request.
+  for (const failure of ["stage-pr.json", "issue", "0001.json", "aggregate-result.json", "missing-status"]) {
+    const scenario = path.join(temporary, `recovery-${failure}`);
+    const scenarioState = path.join(scenario, "state");
+    const scenarioHome = path.join(scenario, "home");
+    const trace = path.join(scenario, "trace");
+    fs.mkdirSync(scenarioHome, { recursive: true });
+    fs.cpSync(state, scenarioState, { recursive: true });
+    const options = {
+      cwd: repo, encoding: "utf8",
+      env: { ...recoveryEnv, PR_REVIEW_STATE_DIR: scenarioState,
+        CODEX_HOME: scenarioHome, GITHUB_OUTPUT: path.join(scenario, "failed-output"),
+        FAKE_FAILURE: failure, FAKE_TRACE: trace, FAKE_PROMPT: path.join(scenario, "prompt") },
+    };
+    const invoke = () => spawnSync(process.execPath, [
+      path.join(path.dirname(new URL(import.meta.url).pathname), "run.mjs"),
+    ], options);
+    const failed = invoke();
+    assert.equal(failed.status, 1, `${failure}: ${failed.stderr}`);
+    assert.match(failed.stderr, /review incomplete|invalid execution status/);
+    const prompt = fs.readFileSync(options.env.FAKE_PROMPT, "utf8");
+    assert.match(prompt, /execution.status="incomplete"/);
+    assert.match(prompt, /attempt to read it with an available read tool/);
+    assert.doesNotMatch(fs.readFileSync(options.env.GITHUB_OUTPUT, "utf8"), /^review=/m);
+    const failedLedger = JSON.parse(fs.readFileSync(path.join(scenarioState, "review-ledger.json")));
+    assert.notEqual(failedLedger.generations.at(-1).status, "completed");
+    assert.equal(failedLedger.stage_evidence.code, null);
+    const failedTurns = fs.readFileSync(trace, "utf8").trim().split("\n");
+    const failedTurn = failedTurns.at(-1);
+    if (failure === "issue") assert.match(failedTurn, /^stage-issue-/);
+    else assert.equal(failedTurn, failure === "missing-status" ? "stage-pr.json" : failure);
+    fs.writeFileSync(trace, "");
+    options.env.FAKE_FAILURE = "";
+    options.env.RESUMED_SESSION_ID = "019f0000-0000-7000-8000-000000000001";
+    options.env.GITHUB_OUTPUT = path.join(scenario, "retry-output");
+    const retried = invoke();
+    assert.equal(retried.status, 0, retried.stderr);
+    assert.equal(fs.readFileSync(trace, "utf8").trim().split("\n")[0], failedTurn);
+    assert.match(fs.readFileSync(options.env.GITHUB_OUTPUT, "utf8"), /^review=/m);
+  }
+
+  {
+    const scenario = path.join(temporary, "completed-blocker");
+    const scenarioState = path.join(scenario, "state");
+    const scenarioHome = path.join(scenario, "home");
+    fs.mkdirSync(scenarioHome, { recursive: true });
+    fs.cpSync(state, scenarioState, { recursive: true });
+    const options = {
+      cwd: repo, encoding: "utf8",
+      env: { ...recoveryEnv, PR_REVIEW_STATE_DIR: scenarioState,
+        CODEX_HOME: scenarioHome, GITHUB_OUTPUT: path.join(scenario, "first-output"),
+        FAKE_BLOCKER: "1" },
+    };
+    const invoke = () => spawnSync(process.execPath, [
+      path.join(path.dirname(new URL(import.meta.url).pathname), "run.mjs"),
+    ], options);
+    assert.equal(invoke().status, 0);
+    options.env.RESUMED_SESSION_ID = "019f0000-0000-7000-8000-000000000001";
+    options.env.GITHUB_OUTPUT = path.join(scenario, "reused-output");
+    const reused = invoke();
+    assert.equal(reused.status, 0, reused.stderr);
+    const output = fs.readFileSync(options.env.GITHUB_OUTPUT, "utf8");
+    assert.match(output, /^total_tokens=0$/m);
+    const review = JSON.parse(output.split("\n").find((line) => line.startsWith("review=")).slice(7));
+    assert.equal(review.readiness.verdict, "fail");
+    assert.equal(review.readiness.blockers[0].code, "scope-mismatch");
+  }
+  {
+    // A legacy completed generation must not bypass the new execution contract.
+    const legacyState = path.join(temporary, "legacy-state");
+    fs.cpSync(state, legacyState, { recursive: true });
+    const legacyPath = path.join(legacyState, "review-ledger.json");
+    const legacy = JSON.parse(fs.readFileSync(legacyPath));
+    legacy.schema_version = 3;
+    legacy.generations.at(-1).status = "completed";
+    legacy.stage_evidence = { pr: { status: "completed", result: { blockers: [{ code: "input-unreadable" }] } } };
+    fs.writeFileSync(legacyPath, JSON.stringify(legacy));
+    const output = path.join(temporary, "legacy-output");
+    const prepared = spawnSync(process.execPath, [
+      path.join(path.dirname(new URL(import.meta.url).pathname), "prepare.mjs"),
+    ], {
+      cwd: repo, encoding: "utf8",
+      env: { ...process.env, REPOSITORY_DIR: repo, PR_REVIEW_STATE_DIR: legacyState,
+        PR_BASE_SHA: base, PR_HEAD_SHA: nextHead, SESSION_KEY: "repo:1:pr:2:v2",
+        MAX_DIFF_BYTES: "1000000", CHUNK_TARGET_BYTES: "600",
+        READINESS_CONTEXT_SHA256: "context-v1", GITHUB_OUTPUT: output },
+    });
+    assert.equal(prepared.status, 0, prepared.stderr);
+    assert.match(fs.readFileSync(output, "utf8"), /^mode=full$/m);
+    const fresh = JSON.parse(fs.readFileSync(legacyPath));
+    assert.equal(fresh.schema_version, 4);
+    assert.equal(fresh.stage_evidence, undefined);
+    assert.equal(fresh.generations.length, 1);
+    assert.ok(fresh.generations[0].chunks.every((chunk) => chunk.status !== "completed"));
+  }
+
   const runResult = spawnSync(process.execPath, [
     path.join(path.dirname(new URL(import.meta.url).pathname), "run.mjs"),
   ], {
