@@ -770,6 +770,9 @@ if (process.env.FAKE_FAILURE === turn ||
   result.execution = { status: "incomplete", reason: "Required input could not be read" };
 }
 if (process.env.FAKE_FAILURE === "missing-status") delete result.execution;
+if (["empty-reason", "whitespace-reason"].includes(process.env.FAKE_FAILURE)) {
+  result.execution = { status: "incomplete", reason: process.env.FAKE_FAILURE === "empty-reason" ? "" : "   " };
+}
 if (process.env.FAKE_BLOCKER && turn === "stage-pr.json") {
   result.blockers = [{ code: "scope-mismatch", title: "Scope mismatch", body: "The body describes a different change." }];
 }
@@ -808,7 +811,7 @@ fs.writeFileSync(outputFile, JSON.stringify(result));
   };
   // Each injected failure must fail closed, checkpoint only earlier completed
   // work, and run the failed turn again on a new same-head request.
-  for (const failure of ["stage-pr.json", "issue", "0001.json", "aggregate-result.json", "missing-status"]) {
+  for (const failure of ["stage-pr.json", "issue", "0001.json", "aggregate-result.json", "missing-status", "empty-reason", "whitespace-reason"]) {
     const scenario = path.join(temporary, `recovery-${failure}`);
     const scenarioState = path.join(scenario, "state");
     const scenarioHome = path.join(scenario, "home");
@@ -827,6 +830,10 @@ fs.writeFileSync(outputFile, JSON.stringify(result));
     const failed = invoke();
     assert.equal(failed.status, 1, `${failure}: ${failed.stderr}`);
     assert.match(failed.stderr, /review incomplete|invalid execution status/);
+    if (["empty-reason", "whitespace-reason"].includes(failure)) {
+      assert.match(failed.stderr, /invalid execution status/);
+      assert.doesNotMatch(failed.stderr, /No reason provided/);
+    }
     const prompt = fs.readFileSync(options.env.FAKE_PROMPT, "utf8");
     assert.match(prompt, /execution.status="incomplete"/);
     assert.match(prompt, /attempt to read it with an available read tool/);
@@ -837,7 +844,7 @@ fs.writeFileSync(outputFile, JSON.stringify(result));
     const failedTurns = fs.readFileSync(trace, "utf8").trim().split("\n");
     const failedTurn = failedTurns.at(-1);
     if (failure === "issue") assert.match(failedTurn, /^stage-issue-/);
-    else assert.equal(failedTurn, failure === "missing-status" ? "stage-pr.json" : failure);
+    else assert.equal(failedTurn, ["missing-status", "empty-reason", "whitespace-reason"].includes(failure) ? "stage-pr.json" : failure);
     fs.writeFileSync(trace, "");
     options.env.FAKE_FAILURE = "";
     options.env.RESUMED_SESSION_ID = "019f0000-0000-7000-8000-000000000001";

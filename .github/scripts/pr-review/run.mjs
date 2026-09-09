@@ -208,11 +208,12 @@ function runTurn({
     || !["completed", "incomplete"].includes(execution.status)
     || typeof execution.reason !== "string"
     || (execution.status === "completed" && execution.reason.trim() !== "")
+    || (execution.status === "incomplete" && execution.reason.trim() === "")
   ) {
     throw new Error(`Codex returned an invalid execution status while reviewing ${key}`);
   }
   if (execution.status === "incomplete") {
-    throw new Error(`Codex review incomplete for ${key}: ${execution.reason.trim() || "No reason provided"}`);
+    throw new Error(`Codex review incomplete for ${key}: ${execution.reason.trim()}`);
   }
   // This field controls execution, not the published review contract.
   const { execution: _, ...reviewValue } = value;
