@@ -1,8 +1,33 @@
 {
   "type": "object",
   "additionalProperties": false,
-  "required": ["summary", "blockers"],
+  "required": [
+    "execution",
+    "summary",
+    "blockers"
+  ],
   "properties": {
+    "execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "reason"
+      ],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "completed",
+            "incomplete"
+          ]
+        },
+        "reason": {
+          "type": "string",
+          "maxLength": 1000
+        }
+      }
+    },
     "summary": {
       "type": "string",
       "maxLength": 12000
@@ -13,7 +38,11 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["code", "title", "body"],
+        "required": [
+          "code",
+          "title",
+          "body"
+        ],
         "properties": {
           "code": {
             "type": "string",

@@ -112,6 +112,15 @@ upload succeeds.
   one model turn are split deterministically at file and hunk boundaries and
   reviewed sequentially in the same session. The final review is published
   only after every chunk and aggregation turn completes.
+- Every model turn reports an execution status separately from findings and
+  policy blockers. Required input paths are checked for readability before the
+  turn, and the reviewer is instructed to read these explicit inputs even when
+  they live outside its working directory. An incomplete or missing execution
+  status fails the run without caching that turn or publishing a final verdict;
+  a new review request retries the unfinished work. Completed reviews with real
+  blockers remain reusable. Ledger schema v4 invalidates older evidence and
+  chunk checkpoints once, so older execution failures cannot remain cached as
+  completed reviews. The read-only permissions and network restrictions remain.
 - Failed chunk reviews checkpoint completed work in the replacement Artifact,
   but do not advance `last_completed_head`. A retry resumes the first unfinished
   chunk. Older snapshots are deleted only after the replacement upload
