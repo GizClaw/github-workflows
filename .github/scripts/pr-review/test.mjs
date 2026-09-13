@@ -744,6 +744,7 @@ try {
 const fs = require("fs");
 const path = require("path");
 const args = process.argv.slice(2);
+if (process.env.FAKE_ARGS) fs.appendFileSync(process.env.FAKE_ARGS, JSON.stringify(args) + "\\n");
 const outputIndex = args.indexOf("--output-last-message");
 if (outputIndex < 0) process.exit(2);
 const outputFile = args[outputIndex + 1];
@@ -834,6 +835,66 @@ fs.writeFileSync(outputFile, JSON.stringify(result));
     ISSUE_REVIEW_INSTRUCTIONS: "Review the Issue.",
     PR_REVIEW_INSTRUCTIONS: "Review PR readiness.",
   };
+  // Exercise restored sessions against a real Git fixture. A base change must
+  // start a fresh model conversation; same-base sessions remain resumable.
+  for (const binding of [null, "old-base", base]) {
+    const scenario = path.join(temporary, `session-base-${binding ?? "missing"}`);
+    const scenarioState = path.join(scenario, "state");
+    fs.mkdirSync(scenario, { recursive: true });
+    fs.cpSync(state, scenarioState, { recursive: true });
+    const restoredId = "019f0000-0000-7000-8000-000000000001";
+    const scenarioLedgerFile = path.join(scenarioState, "review-ledger.json");
+    const scenarioLedger = JSON.parse(fs.readFileSync(scenarioLedgerFile));
+    scenarioLedger.stage_evidence ??= { pr: null, issues: {} };
+    scenarioLedger.stage_evidence.code = { result: {
+      summary: "Previous incremental findings must survive a model reset.",
+      findings: [], readiness: { verdict: "pass", blockers: [] },
+    } };
+    fs.writeFileSync(scenarioLedgerFile, JSON.stringify(scenarioLedger));
+    if (binding !== null) fs.writeFileSync(path.join(scenarioState, "session-trusted-base.json"),
+      JSON.stringify({ session_id: restoredId, base_sha: binding }));
+    const argsFile = path.join(scenario, "args");
+    const result = spawnSync(process.execPath, [
+      path.join(path.dirname(new URL(import.meta.url).pathname), "run.mjs"),
+    ], { cwd: repo, encoding: "utf8", env: {
+      ...recoveryEnv, PR_REVIEW_STATE_DIR: scenarioState,
+      RESUMED_SESSION_ID: restoredId, FAKE_ARGS: argsFile,
+      GITHUB_OUTPUT: path.join(scenario, "output"),
+    } });
+    assert.equal(result.status, 0, result.stderr);
+    const calls = fs.readFileSync(argsFile, "utf8").trim().split("\n").map(JSON.parse);
+    assert.equal(calls[0][1] === "resume", binding === base);
+    assert.ok(calls.slice(1).every((args) => args[1] === "resume"));
+    assert.equal(JSON.parse(fs.readFileSync(path.join(scenarioState, "session-trusted-base.json"))).base_sha, base);
+    assert.equal(latestGeneration.mode, "incremental");
+    if (binding !== null) {
+      const aggregate = JSON.parse(fs.readFileSync(path.join(scenarioState,
+        "generations", latestGeneration.key, "aggregate-input.json")));
+      assert.equal(aggregate.previous_code_review.summary,
+        "Previous incremental findings must survive a model reset.");
+    }
+  }
+  {
+    const scenario = path.join(temporary, "unavailable-base");
+    const scenarioState = path.join(scenario, "state");
+    fs.mkdirSync(scenario, { recursive: true });
+    fs.cpSync(state, scenarioState, { recursive: true });
+    const invalidContext = JSON.parse(fs.readFileSync(contextFile, "utf8"));
+    invalidContext.readiness.snapshot.base_sha = "0".repeat(40);
+    const invalidContextFile = path.join(scenario, "context.json");
+    fs.writeFileSync(invalidContextFile, JSON.stringify(invalidContext));
+    const argsFile = path.join(scenario, "args");
+    const result = spawnSync(process.execPath, [
+      path.join(path.dirname(new URL(import.meta.url).pathname), "run.mjs"),
+    ], { cwd: repo, encoding: "utf8", env: {
+      ...recoveryEnv, PR_REVIEW_STATE_DIR: scenarioState,
+      PR_CONTEXT_FILE: invalidContextFile, FAKE_ARGS: argsFile,
+      GITHUB_OUTPUT: path.join(scenario, "output"),
+    } });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /Trusted base .* is unavailable/);
+    assert.equal(fs.existsSync(argsFile), false);
+  }
   // Each injected failure must fail closed, checkpoint only earlier completed
   // work, and run the failed turn again on a new same-head request.
   for (const failure of ["stage-pr.json", "issue", "0001.json", "aggregate-result.json", "missing-status", "empty-reason", "whitespace-reason"]) {
