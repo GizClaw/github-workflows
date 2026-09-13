@@ -462,7 +462,7 @@ jobs:
                         }
                       }
                       reviewThreads(first: 100) {
-                        pageInfo { hasNextPage }
+                        pageInfo { hasNextPage endCursor }
                         nodes {
                           isResolved
                           comments(first: 1) {
@@ -483,6 +483,36 @@ jobs:
               });
               const pullRequest = data.repository.pullRequest;
               if (!pullRequest) throw new Error('Pull request was not found');
+              // Fetch every page before reporting complete thread evidence.
+              const cursors = new Set();
+              while (pullRequest.reviewThreads.pageInfo.hasNextPage) {
+                const after = pullRequest.reviewThreads.pageInfo.endCursor;
+                if (!after || cursors.has(after)) {
+                  throw new Error('Review thread pagination did not advance');
+                }
+                cursors.add(after);
+                const page = await github.graphql(`
+                  query($owner: String!, $repo: String!, $number: Int!, $after: String!) {
+                    repository(owner: $owner, name: $repo) {
+                      pullRequest(number: $number) {
+                        reviewThreads(first: 100, after: $after) {
+                          pageInfo { hasNextPage endCursor }
+                          nodes {
+                            isResolved
+                            comments(first: 1) { nodes { author { login } body } }
+                          }
+                        }
+                      }
+                    }
+                  }
+                `, {
+                  owner: context.repo.owner, repo: context.repo.repo,
+                  number: Number(process.env.PULL_REQUEST_NUMBER), after,
+                });
+                const threads = page.repository.pullRequest.reviewThreads;
+                pullRequest.reviewThreads.nodes.push(...threads.nodes);
+                pullRequest.reviewThreads.pageInfo = threads.pageInfo;
+              }
               const comments = await github.paginate(github.rest.issues.listComments, {
                 owner: context.repo.owner, repo: context.repo.repo,
                 issue_number: Number(process.env.PULL_REQUEST_NUMBER), per_page: 100,
