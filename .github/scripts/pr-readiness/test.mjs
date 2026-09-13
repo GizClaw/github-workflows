@@ -541,7 +541,8 @@ try {
     },
   };
   fs.writeFileSync(fixtureFile, JSON.stringify(fixture));
-  const verify = (expected) => spawnSync(process.execPath, [
+  const verify = (expected, network = false) => spawnSync(process.execPath, [
+    ...(network ? ['--import', path.join(temporary, 'fetch.mjs')] : []),
     path.join(path.dirname(new URL(import.meta.url).pathname), "verify.mjs"),
   ], {
     encoding: "utf8",
@@ -549,12 +550,59 @@ try {
       ...process.env,
       GITHUB_REPOSITORY: input.repository,
       PULL_REQUEST_NUMBER: String(input.number),
-      PR_READINESS_VERIFY_INPUT_FILE: fixtureFile,
+      PR_READINESS_VERIFY_INPUT_FILE: network ? '' : fixtureFile,
+      GITHUB_TOKEN: 'test-token',
       EXPECTED_SNAPSHOT_SHA256: expected,
       GITHUB_OUTPUT: outputFile,
     },
   });
   assert.equal(verify(context.readiness.snapshot_sha256).status, 0);
+  const resolved = { isResolved: true, comments: { nodes: [] } };
+  const pageOne = structuredClone(fixture);
+  pageOne.repository.pullRequest.reviewThreads = {
+    nodes: Array(100).fill(resolved),
+    pageInfo: { hasNextPage: true, endCursor: 'first' },
+  };
+  const pageTwo = structuredClone(fixture);
+  pageTwo.repository.pullRequest.reviewThreads = {
+    nodes: Array(5).fill(resolved),
+    pageInfo: { hasNextPage: false, endCursor: 'last' },
+  };
+  function mockPages(second, httpStatus = 200) {
+    fs.writeFileSync(path.join(temporary, 'fetch.mjs'), `
+      import assert from 'node:assert/strict';
+      let call = 0;
+      globalThis.fetch = async (_url, options) => {
+        const request = JSON.parse(options.body);
+        assert.match(request.query, /after: \\$after/);
+        assert.equal(request.variables.after, call === 0 ? null : 'first');
+        const first = call++ === 0;
+        return { ok: first || ${httpStatus} === 200, status: ${httpStatus},
+          json: async () => ({data: first ? ${JSON.stringify(pageOne)} : ${JSON.stringify(second)}}) };
+      };
+    `);
+  }
+  mockPages(pageTwo);
+  assert.equal(verify(context.readiness.snapshot_sha256, true).status, 0);
+  const findingPage = structuredClone(pageTwo);
+  findingPage.repository.pullRequest.reviewThreads.nodes.push({
+    isResolved: false, comments: { nodes: [{author: {login: 'github-actions[bot]'},
+      body: 'Badge](https://img.shields.io/badge/P1-orange)'}] },
+  });
+  mockPages(findingPage);
+  assert.notEqual(verify(context.readiness.snapshot_sha256, true).status, 0);
+  mockPages(pageTwo, 503);
+  assert.match(verify(context.readiness.snapshot_sha256, true).stderr, /HTTP 503/);
+  mockPages(pageOne);
+  assert.match(verify(context.readiness.snapshot_sha256, true).stderr, /pagination did not advance/);
+  const missingCursor = structuredClone(pageOne);
+  missingCursor.repository.pullRequest.reviewThreads.pageInfo.endCursor = null;
+  mockPages(missingCursor);
+  assert.match(verify(context.readiness.snapshot_sha256, true).stderr, /pagination did not advance/);
+  const changedHead = structuredClone(pageTwo);
+  changedHead.repository.pullRequest.headRefOid = 'f'.repeat(40);
+  mockPages(changedHead);
+  assert.match(verify(context.readiness.snapshot_sha256, true).stderr, /changed during review thread pagination/);
   assert.match(
     fs.readFileSync(outputFile, "utf8"),
     new RegExp(context.readiness.snapshot_sha256),

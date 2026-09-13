@@ -9,7 +9,7 @@ const required = (name) => {
   return value;
 };
 
-async function fetchPullRequest() {
+async function fetchPullRequest(after = null) {
   if (process.env.PR_READINESS_VERIFY_INPUT_FILE) {
     const payload = JSON.parse(fs.readFileSync(
       process.env.PR_READINESS_VERIFY_INPUT_FILE,
@@ -32,7 +32,7 @@ async function fetchPullRequest() {
       },
       body: JSON.stringify({
         query: `
-          query($owner: String!, $repo: String!, $number: Int!) {
+          query($owner: String!, $repo: String!, $number: Int!, $after: String) {
             repository(owner: $owner, name: $repo) {
               nameWithOwner
               pullRequest(number: $number) {
@@ -76,8 +76,8 @@ async function fetchPullRequest() {
                     }
                   }
                 }
-                reviewThreads(first: 100) {
-                  pageInfo { hasNextPage }
+                reviewThreads(first: 100, after: $after) {
+                  pageInfo { hasNextPage endCursor }
                   nodes {
                     isResolved
                     comments(first: 1) {
@@ -95,6 +95,7 @@ async function fetchPullRequest() {
         variables: {
           owner,
           repo,
+          after,
           number: Number(required("PULL_REQUEST_NUMBER")),
         },
       }),
@@ -115,6 +116,22 @@ async function fetchPullRequest() {
 const data = await fetchPullRequest();
 const pullRequest = data.repository?.pullRequest;
 if (!pullRequest) throw new Error("Pull request was not found");
+const cursors = new Set();
+while (pullRequest.reviewThreads.pageInfo.hasNextPage) {
+  const after = pullRequest.reviewThreads.pageInfo.endCursor;
+  if (!after || cursors.has(after)) {
+    throw new Error("Review thread pagination did not advance");
+  }
+  cursors.add(after);
+  const page = await fetchPullRequest(after);
+  const next = page.repository?.pullRequest;
+  if (!next || next.baseRefOid !== pullRequest.baseRefOid ||
+      next.headRefOid !== pullRequest.headRefOid) {
+    throw new Error("Pull request changed during review thread pagination");
+  }
+  pullRequest.reviewThreads.nodes.push(...next.reviewThreads.nodes);
+  pullRequest.reviewThreads.pageInfo = next.reviewThreads.pageInfo;
+}
 const linkedIssues = pullRequest.closingIssuesReferences.nodes
   .map((issue) => ({
     repository: issue.repository.nameWithOwner,
