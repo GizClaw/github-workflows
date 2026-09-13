@@ -255,7 +255,7 @@ const discussionScript = scripts.find(
   (body) => body.includes("comments: selectedComments.map("),
 );
 assert.ok(discussionScript, "the discussion step must select comments");
-async function collectDiscussion({ comments, triggerCommentId }) {
+async function collectDiscussion({ comments = [], triggerCommentId = '', pages, expectedFailure = '' }) {
   const contextFile = path.join(
     fs.mkdtempSync(path.join(os.tmpdir(), "pr-discussion-")),
     "context.json",
@@ -274,10 +274,18 @@ async function collectDiscussion({ comments, triggerCommentId }) {
     closingIssuesReferences: { totalCount: 0, nodes: [] },
     reviewThreads: { nodes: [], pageInfo: { hasNextPage: false } },
   };
+  let pageIndex = 0;
   const github = {
-    graphql: async () => ({
-      repository: { nameWithOwner: "GizClaw/github-workflows", pullRequest },
-    }),
+    graphql: async (_query, variables) => {
+      if (pages) {
+        if (pageIndex > 0) assert.equal(variables.after, pages[pageIndex - 1].pageInfo.endCursor);
+        const page = pages[pageIndex++];
+        if (page instanceof Error) throw page;
+        return { repository: { nameWithOwner: 'GizClaw/github-workflows',
+          pullRequest: { ...pullRequest, reviewThreads: structuredClone(page) } } };
+      }
+      return { repository: { nameWithOwner: 'GizClaw/github-workflows', pullRequest } };
+    },
     paginate: async () => comments,
     rest: { issues: { listComments: () => {} } },
   };
@@ -304,9 +312,26 @@ async function collectDiscussion({ comments, triggerCommentId }) {
     if (value === undefined) delete process.env[name];
     else process.env[name] = value;
   }
+  if (expectedFailure) {
+    assert.ok(failure.includes(expectedFailure), failure);
+    assert.equal(fs.existsSync(contextFile), false);
+    return;
+  }
   assert.equal(failure, "", "the discussion step must not fail");
   return JSON.parse(fs.readFileSync(contextFile, "utf8"));
 }
+const resolvedThread = { isResolved: true, comments: { nodes: [] } };
+const threadPage = (nodes, endCursor, hasNextPage) => ({ nodes, pageInfo: { endCursor, hasNextPage } });
+const firstThreadPage = threadPage(Array(100).fill(resolvedThread), 'page1', true);
+const allResolved = await collectDiscussion({ pages: [firstThreadPage, threadPage(Array(5).fill(resolvedThread), 'page2', false)] });
+assert.equal(allResolved.review_threads_truncated, false);
+assert.equal(allResolved.unresolved_openai_thread_count, 0);
+const unresolvedThread = { isResolved: false, comments: { nodes: [{ author: { login: 'github-actions[bot]' }, body: 'Badge](https://img.shields.io/badge/P1-orange)' }] } };
+const laterFinding = await collectDiscussion({ pages: [firstThreadPage, threadPage([unresolvedThread], 'page2', false)] });
+assert.equal(laterFinding.unresolved_openai_thread_count, 1);
+await collectDiscussion({ pages: [firstThreadPage, new Error('page fetch failed')], expectedFailure: 'page fetch failed' });
+await collectDiscussion({ pages: [firstThreadPage, threadPage([], 'page1', true)], expectedFailure: 'pagination did not advance' });
+await collectDiscussion({ pages: [threadPage([], null, true)], expectedFailure: 'pagination did not advance' });
 const comment = (id, body) => ({
   id,
   user: { login: "octocat", type: "User" },
