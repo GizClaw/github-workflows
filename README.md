@@ -95,6 +95,10 @@ upload succeeds.
   Reused and deterministic rows consume zero model tokens. Cached-input tokens
   are part of input tokens, and reasoning-output tokens are part of output
   tokens; neither is added to the total a second time.
+- Model sessions are bound to their trusted base commit. A changed base (or an
+  older artifact without that binding) starts a fresh conversation while keeping
+  the deterministic review ledger. Each model turn receives the current base
+  explicitly, and the runner checks that its Git object is available first.
 - Each PR has one logical Codex session. Its 30-day Artifact v2 snapshot stores
   the validated Codex rollout plus a generation ledger containing the
   last fully reviewed head, any in-progress target, the canonical file listing,
