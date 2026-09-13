@@ -167,6 +167,9 @@ Review threads are collected across all GraphQL pages before counting unresolved
 actionable findings. A failed page request or a missing or repeated continuation
 cursor fails context collection closed; having more than 100 historical threads
 alone is not a readiness blocker.
+The publication-time verifier also enumerates every page before comparing the
+readiness snapshot. It rejects base/head changes between pages and preserves
+the final snapshot comparison, including unresolved findings on later pages.
 
 The reviewer preserves every native closing Issue returned by GitHub's maximum
 100-node GraphQL page. It fails closed when `totalCount` exceeds the collected
