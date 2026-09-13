@@ -843,6 +843,14 @@ fs.writeFileSync(outputFile, JSON.stringify(result));
     fs.mkdirSync(scenario, { recursive: true });
     fs.cpSync(state, scenarioState, { recursive: true });
     const restoredId = "019f0000-0000-7000-8000-000000000001";
+    const scenarioLedgerFile = path.join(scenarioState, "review-ledger.json");
+    const scenarioLedger = JSON.parse(fs.readFileSync(scenarioLedgerFile));
+    scenarioLedger.stage_evidence ??= { pr: null, issues: {} };
+    scenarioLedger.stage_evidence.code = { result: {
+      summary: "Previous incremental findings must survive a model reset.",
+      findings: [], readiness: { verdict: "pass", blockers: [] },
+    } };
+    fs.writeFileSync(scenarioLedgerFile, JSON.stringify(scenarioLedger));
     if (binding !== null) fs.writeFileSync(path.join(scenarioState, "session-trusted-base.json"),
       JSON.stringify({ session_id: restoredId, base_sha: binding }));
     const argsFile = path.join(scenario, "args");
@@ -858,6 +866,13 @@ fs.writeFileSync(outputFile, JSON.stringify(result));
     assert.equal(calls[0][1] === "resume", binding === base);
     assert.ok(calls.slice(1).every((args) => args[1] === "resume"));
     assert.equal(JSON.parse(fs.readFileSync(path.join(scenarioState, "session-trusted-base.json"))).base_sha, base);
+    assert.equal(latestGeneration.mode, "incremental");
+    if (binding !== null) {
+      const aggregate = JSON.parse(fs.readFileSync(path.join(scenarioState,
+        "generations", latestGeneration.key, "aggregate-input.json")));
+      assert.equal(aggregate.previous_code_review.summary,
+        "Previous incremental findings must survive a model reset.");
+    }
   }
   {
     const scenario = path.join(temporary, "unavailable-base");

@@ -50,6 +50,7 @@ const context = readJson(contextFile);
 const trustedBaseSha = context.readiness.snapshot.base_sha;
 const sessionBaseFile = path.join(stateDir, "session-trusted-base.json");
 const sessionBase = fs.existsSync(sessionBaseFile) ? readJson(sessionBaseFile) : null;
+const restoredSessionAvailable = Boolean(sessionId && findSession(codexHome, sessionId)?.file);
 // A restored conversation may keep using Git revisions from an earlier runner.
 // Keep deterministic review checkpoints, but do not resume model context across
 // trusted-base changes (or when an older artifact has no identity binding).
@@ -687,7 +688,7 @@ try {
       // they are not offered for preservation; only an incremental generation
       // carries the previous result forward.
       previous_code_review:
-        resumableSession && generation.mode === "incremental"
+        (resumableSession || restoredSessionAvailable) && generation.mode === "incremental"
           ? previousCode?.result ?? null
           : null,
       linked_issue_evidence: issueResults.map((issue) => ({
