@@ -100,10 +100,63 @@ export function analyzeIssue(issue) {
     ));
   }
 
+  for (const check of issueRelationshipChecks(snapshot)) {
+    if (check.status === "pass") continue;
+    const declared = check.declared_parent_numbers
+      .map((number) => `#${number}`)
+      .join(", ");
+    blockers.push(check.native_parent_number == null
+      ? blocker(
+          "parent-relationship-missing",
+          `The Issue body declares parent ${declared}, but the Issue has no native parent.`,
+        )
+      : blocker(
+          "parent-relationship-mismatch",
+          `The Issue body declares parent ${declared}, but its native parent is #${check.native_parent_number}.`,
+        ));
+  }
+
   return {
     schema_version: ISSUE_REVIEW_SCHEMA_VERSION,
     snapshot,
     snapshot_sha256: issueSnapshotSha256(snapshot),
     deterministic_blockers: blockers,
   };
+}
+
+const PARENT_DECLARATION =
+  /^[ \t]*[-*][ \t]+Parent:[ \t]*(?:([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+))?#(\d+)\b/gim;
+
+function declaredParents(snapshot) {
+  // Fenced examples are documentation, not a relationship declaration.
+  const body = snapshot.body.replace(/^[ \t]*(```|~~~)[\s\S]*?^[ \t]*\1[^\n]*$/gm, "");
+  const numbers = new Set();
+  for (const match of body.matchAll(PARENT_DECLARATION)) {
+    if (
+      match[1]
+      && match[1].toLowerCase() !== snapshot.repository.toLowerCase()
+    ) {
+      continue;
+    }
+    numbers.add(Number(match[2]));
+  }
+  return [...numbers].sort((left, right) => left - right);
+}
+
+// Native relationship facts the reviewer must not reinterpret: a body
+// `- Parent: #N` line is compared with GitHub's native parent here instead of
+// being left to a model that may misread (or keep re-emitting) the metadata.
+export function issueRelationshipChecks(issue) {
+  const snapshot = issueSnapshot(issue);
+  const declared = declaredParents(snapshot);
+  if (declared.length === 0) return [];
+  const status = declared.length === 1 && declared[0] === snapshot.parent_number
+    ? "pass"
+    : "fail";
+  return [{
+    check: "body-parent-matches-native-parent",
+    status,
+    declared_parent_numbers: declared,
+    native_parent_number: snapshot.parent_number,
+  }];
 }

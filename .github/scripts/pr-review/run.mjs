@@ -13,8 +13,11 @@ import {
   usageFromSession,
   writeJson,
 } from "./common.mjs";
+import { issueRelationshipChecks } from "../issue-review/common.mjs";
 import {
   emptyMetrics,
+  ISSUE_STAGE_INPUT_VERSION,
+  issueRelationships,
   snapshotDiff,
   stageIdentity,
   stageSha256,
@@ -416,6 +419,7 @@ try {
       snapshot: {
         issue,
         trusted_base_sha: trustedBaseSha,
+        input_version: ISSUE_STAGE_INPUT_VERSION,
       },
       policySha256: stagePolicySha("issue"),
       model,
@@ -465,6 +469,8 @@ try {
         mode: issueMode,
         current_identity: issueIdentity,
         change: delta,
+        current_relationships: issueRelationships(issue),
+        relationship_checks: issueRelationshipChecks(issue),
         previous_result:
           resumableSession ? previousIssue?.result ?? null : null,
         deterministic_blockers:
@@ -498,6 +504,7 @@ try {
           "Treat the trusted-base AGENTS.md hierarchy and the repository documents it designates as the authoritative project Issue contract. Apply additional trusted caller instructions where they do not contradict that repository contract. Do not impose a built-in title, Issue Type, section list, relationship format, or tracking-versus-implementation convention unless the trusted project policy or caller instructions require it.",
           "Assess repository fit and implementation readiness. Verify ownership and module boundaries, committed/generated surfaces, APIs or interfaces, runtime and lifecycle behavior, error handling and cleanup, platform differences, dependencies, and observable acceptance criteria whenever relevant. A competent implementer must be able to start without unresolved product or architecture decisions.",
           "If required evidence is absent or multiple designs remain plausible, return a blocker describing the missing decision or an Open Design Question. Do not invent product behavior, paths, APIs, storage formats, hardware behavior, migrations, or compatibility guarantees. Do not assess whether other Issues are present in the PR Close Set; deterministic PR linkage owns that decision. Do not review the PR body or code in this stage. Treat supplied deterministic blockers as already reported, and preserve only still-applicable previous model blockers when the input is incremental.",
+          "current_relationships holds the authoritative current native Issue Type, state, parent, sub-issues, and dependencies even when the change omits them, and relationship_checks holds deterministic results (a body `- Parent: #N` line against the native parent is owned by those checks; never report it yourself). Re-validate every previous blocker against current_relationships, relationship_checks, and the change before preserving it, and drop any previous blocker they contradict, such as a missing-parent claim when parent_number is set.",
           "Return only the JSON object required by the stage output schema.",
         ].join("\n"),
       });
