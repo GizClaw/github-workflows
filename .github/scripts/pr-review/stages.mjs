@@ -116,3 +116,28 @@ export function totalMetrics(rows) {
     : totals.cached_input_tokens / totals.input_tokens;
   return totals;
 }
+
+// Bumped when the Issue stage input changes shape, so cached Issue evidence
+// (which may hold a blocker the older input could never clear) is revalidated
+// once as an incremental turn instead of being reused indefinitely.
+export const ISSUE_STAGE_INPUT_VERSION = 2;
+
+export const ISSUE_RELATIONSHIP_FIELDS = Object.freeze([
+  "issue_type",
+  "state",
+  "parent_number",
+  "sub_issue_numbers",
+  "sub_issues",
+  "blocked_by",
+  "blocking",
+]);
+
+// A field-level delta omits unchanged metadata, so a previous blocker about a
+// relationship that never changes could never be re-validated. Always supply
+// the current values next to the delta.
+export function issueRelationships(snapshot) {
+  return Object.fromEntries(ISSUE_RELATIONSHIP_FIELDS.map((field) => [
+    field,
+    snapshot?.[field] ?? null,
+  ]));
+}

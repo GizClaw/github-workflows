@@ -3,6 +3,7 @@
 import assert from "node:assert/strict";
 import {
   analyzeIssue,
+  issueRelationshipChecks,
   issueSnapshot,
   issueSnapshotSha256,
   ISSUE_REVIEW_SCHEMA_VERSION,
@@ -154,5 +155,45 @@ assert.deepEqual(analyzeIssue({
   ...valid,
   body: "Any project-defined Issue structure is accepted deterministically.",
 }).deterministic_blockers, []);
+
+// A body `- Parent: #N` line is checked against the native parent
+// deterministically instead of being left to the model.
+const withParentLine = { ...valid, body: `- Parent: #1358\n\n${validBody}` };
+assert.deepEqual(issueRelationshipChecks(valid), []);
+assert.deepEqual(
+  analyzeIssue({ ...withParentLine, parent_number: 1358 }).deterministic_blockers,
+  [],
+);
+assert.deepEqual(issueRelationshipChecks({
+  ...withParentLine,
+  parent_number: 1358,
+}), [{
+  check: "body-parent-matches-native-parent",
+  status: "pass",
+  declared_parent_numbers: [1358],
+  native_parent_number: 1358,
+}]);
+assert.deepEqual(
+  analyzeIssue(withParentLine).deterministic_blockers.map((item) => item.code),
+  ["parent-relationship-missing"],
+);
+assert.deepEqual(
+  analyzeIssue({ ...withParentLine, parent_number: 7 })
+    .deterministic_blockers.map((item) => item.code),
+  ["parent-relationship-mismatch"],
+);
+assert.deepEqual(analyzeIssue({
+  ...valid,
+  body: `- Parent: GizClaw/example#1358\n\n${validBody}`,
+  parent_number: 1358,
+}).deterministic_blockers, []);
+assert.deepEqual(issueRelationshipChecks({
+  ...valid,
+  body: `- Parent: other/repo#5\n\n${validBody}`,
+}), []);
+assert.deepEqual(issueRelationshipChecks({
+  ...valid,
+  body: `\`\`\`markdown\n- Parent: #5\n\`\`\`\n\n${validBody}`,
+}), []);
 
 process.stdout.write("issue-review tests passed\n");

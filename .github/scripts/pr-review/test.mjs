@@ -16,6 +16,7 @@ import {
 } from "./common.mjs";
 import {
   emptyMetrics,
+  issueRelationships,
   snapshotDiff,
   stageIdentity,
   totalMetrics,
@@ -75,6 +76,23 @@ assert.deepEqual(
     }],
   },
 );
+{
+  // A previous blocker about unchanged relationship metadata must be
+  // re-validatable: the delta omits parent_number, the current values do not.
+  const previous = { body: "Plan.", parent_number: 1358, sub_issue_numbers: [] };
+  const current = { ...previous, body: "Plan.\nMore." };
+  const delta = snapshotDiff(previous, current);
+  assert.deepEqual(delta.changes.map((change) => change.field), ["body"]);
+  assert.deepEqual(issueRelationships(current), {
+    issue_type: null,
+    state: null,
+    parent_number: 1358,
+    sub_issue_numbers: [],
+    sub_issues: null,
+    blocked_by: null,
+    blocking: null,
+  });
+}
 assert.deepEqual(
   stageIdentity({
     stage: "pr",
@@ -782,6 +800,7 @@ fs.appendFileSync(sessionFile, JSON.stringify({
 const prompt = fs.readFileSync(0, "utf8");
 if (process.env.FAKE_PROMPT) fs.writeFileSync(process.env.FAKE_PROMPT, prompt);
 const turn = path.basename(outputFile);
+if (process.env.FAKE_PROMPTS) fs.writeFileSync(path.join(process.env.FAKE_PROMPTS, turn + ".prompt"), prompt);
 if (process.env.FAKE_TRACE) fs.appendFileSync(process.env.FAKE_TRACE, turn + "\\n");
 const result = schemaFile.endsWith("stage-output-schema.json")
     ? { summary: "Fake stage review complete.", blockers: [] }
@@ -1152,14 +1171,40 @@ fs.writeFileSync(outputFile, JSON.stringify(result));
     ],
   );
 
+  // Reproduce a stale full-review blocker: the previous result claims the
+  // Issue has no native parent although parent_number was already set and
+  // never changes. The incremental input must carry the current parent so the
+  // blocker can clear.
+  const ledgerFile = path.join(state, "review-ledger.json");
+  const issueChangedPrompts = path.join(temporary, "issue-changed-prompts");
+  fs.mkdirSync(issueChangedPrompts);
+  const staleLedger = JSON.parse(fs.readFileSync(ledgerFile, "utf8"));
+  const staleIssue = staleLedger.stage_evidence.issues["example/repo#1"];
+  staleIssue.snapshot.parent_number = 9;
+  staleIssue.snapshot.body = `- Parent: #9\n\n${staleIssue.snapshot.body}`;
+  staleIssue.result.blockers = [{
+    code: "missing-parent",
+    title: "Missing native parent",
+    body: "The supplied full Issue metadata has `parent: null`.",
+  }];
+  fs.writeFileSync(ledgerFile, JSON.stringify(staleLedger));
   const changedContext = JSON.parse(fs.readFileSync(contextFile, "utf8"));
-  changedContext.readiness.snapshot.linked_issues[0].snapshot.body +=
-    "\n\nAcceptance detail changed.";
+  const changedIssue = changedContext.readiness.snapshot.linked_issues[0].snapshot;
+  changedIssue.parent_number = 9;
+  changedIssue.body = `- Parent: #9\n\n${changedIssue.body}`
+    + "\n\nAcceptance detail changed.";
   changedContext.readiness.snapshot.linked_issues[0].snapshot_sha256 = "issue-v2";
   fs.writeFileSync(
     contextFile,
     `${JSON.stringify(changedContext, null, 2)}\n`,
   );
+  const stageInputsDir = path.join(
+    state,
+    "generations",
+    latestGeneration.key,
+    "stage-inputs",
+  );
+  const stageInputsBefore = fs.readdirSync(stageInputsDir);
   const issueChangedOutput = path.join(temporary, "issue-changed-output");
   const issueChangedResult = spawnSync(process.execPath, [
     path.join(path.dirname(new URL(import.meta.url).pathname), "run.mjs"),
@@ -1189,9 +1234,45 @@ fs.writeFileSync(outputFile, JSON.stringify(result));
       REVIEW_INSTRUCTIONS: "Review the diff.",
       ISSUE_REVIEW_INSTRUCTIONS: "Review the Issue.",
       PR_REVIEW_INSTRUCTIONS: "Review PR readiness.",
+      FAKE_PROMPTS: issueChangedPrompts,
     },
   });
   assert.equal(issueChangedResult.status, 0, issueChangedResult.stderr);
+  const issueStageInputName = fs.readdirSync(stageInputsDir).find((name) => (
+    name.startsWith("issue-1-") && !stageInputsBefore.includes(name)
+  ));
+  const issueStageInput = JSON.parse(fs.readFileSync(
+    path.join(stageInputsDir, issueStageInputName),
+    "utf8",
+  ));
+  assert.equal(issueStageInput.mode, "incremental");
+  assert.deepEqual(
+    issueStageInput.change.changes.map((change) => change.field),
+    ["body"],
+  );
+  assert.equal(issueStageInput.current_relationships.parent_number, 9);
+  assert.deepEqual(issueStageInput.relationship_checks, [{
+    check: "body-parent-matches-native-parent",
+    status: "pass",
+    declared_parent_numbers: [9],
+    native_parent_number: 9,
+  }]);
+  assert.equal(
+    issueStageInput.previous_result.blockers[0].code,
+    "missing-parent",
+  );
+  const issuePrompt = fs.readFileSync(path.join(
+    issueChangedPrompts,
+    `stage-${issueStageInputName}.prompt`,
+  ), "utf8");
+  assert.match(issuePrompt, /current_relationships holds the authoritative/);
+  assert.match(issuePrompt, /drop any previous blocker they contradict/);
+  // The fake reviewer returns no blockers, so the stale one clears.
+  const clearedLedger = JSON.parse(fs.readFileSync(ledgerFile, "utf8"));
+  assert.deepEqual(
+    clearedLedger.stage_evidence.issues["example/repo#1"].result.blockers,
+    [],
+  );
   const issueChangedOutputs = fs.readFileSync(issueChangedOutput, "utf8");
   assert.match(issueChangedOutputs, /^input_tokens=200$/m);
   const issueChangedUsageLine = issueChangedOutputs

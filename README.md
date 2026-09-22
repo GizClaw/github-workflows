@@ -164,6 +164,9 @@ linkage requirements:
 - The PR has at least one same-repository native closing Issue from GraphQL
   `closingIssuesReferences`; text-only references do not count.
 - Issue and sub-issue snapshots must be complete.
+- When an Issue body declares `- Parent: #N` (or `owner/repo#N` for the same
+  repository), GitHub's native parent must be that Issue. This is checked
+  deterministically, never left to the model.
 - The complete PR result follows the current Issue plan. Material deviations
   must be reflected in the Issue or disclosed and resolved in the PR.
 
@@ -249,6 +252,14 @@ as pull-request changes. A full generation aggregates only its own chunk
 reviews; the previous code review is offered for preservation to incremental
 generations alone, so findings about an earlier range cannot outlive the diff
 that produced them.
+
+Every Issue-stage turn, including an incremental one, also receives the
+current native Issue Type, state, parent, sub-issues, and dependencies plus the
+deterministic relationship checks. The reviewer re-validates previous blockers
+against those current values and drops any they contradict, so a wrong blocker
+about metadata that never changes cannot outlive its evidence. Changing that
+input shape invalidates cached Issue evidence once, revalidating it as an
+incremental turn.
 
 An Issue edit revalidates plan conformance without resending an unchanged
 complete code diff. A runtime, model, or trusted-policy change intentionally
