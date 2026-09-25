@@ -21,7 +21,7 @@ It must pass an `OPENAI_API_KEY` Actions secret explicitly. Set
 `pr-readiness-instructions` in the caller to match the repository's trusted
 policy. The shared reviewer always uses `gpt-6-sol` with `low` reasoning
 effort (the Codex setting corresponding to a light review) and accepts complete
-diffs up to 5,000,000 bytes. The legacy `model`, `effort`, and `max-diff-bytes`
+diffs up to 100,000,000 bytes. The legacy `model`, `effort`, and `max-diff-bytes`
 inputs remain accepted for pinned callers but are ignored. Existing callers
 must update their pinned workflow reference to receive this policy; they can
 then remove those three inputs. The caller must grant `checks: write` so the
@@ -142,7 +142,7 @@ upload succeeds.
   review requests when opening, editing, or pushing to an eligible PR. Use a
   dedicated API project with appropriate usage limits and restrict the
   organization secret to selected repositories.
-- Complete diffs larger than 5,000,000 bytes fail before Codex runs. The
+- Complete diffs larger than 100,000,000 bytes fail before Codex runs. The
   `chunk-target-bytes` input still controls deterministic chunk sizing; the
   legacy `max-diff-bytes` input no longer changes the total limit.
 - The reviewer checks out only the trusted base commit, reads the PR diff as

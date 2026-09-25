@@ -19,9 +19,9 @@ on:
         default: 0.145.0
         type: string
       max-diff-bytes:
-        description: Deprecated compatibility input; the shared reviewer always accepts up to 5000000 diff bytes.
+        description: Deprecated compatibility input; the shared reviewer always accepts up to 100000000 diff bytes.
         required: false
-        default: 5000000
+        default: 100000000
         type: number
       chunk-target-bytes:
         description: Deterministic target size for each first-review or incremental diff chunk.
@@ -319,7 +319,7 @@ jobs:
     env:
       REVIEW_MODEL: gpt-6-sol
       REVIEW_EFFORT: low
-      REVIEW_MAX_DIFF_BYTES: '5000000'
+      REVIEW_MAX_DIFF_BYTES: '100000000'
       PULL_REQUEST_NUMBER: ${{ needs.resolve.outputs.number }}
       PR_BASE_SHA: ${{ needs.resolve.outputs.base_sha }}
       PR_BASE_REF: ${{ needs.resolve.outputs.base_ref }}

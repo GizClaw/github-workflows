@@ -149,7 +149,7 @@ const workflowSource = fs.readFileSync(
 assert.doesNotMatch(workflowSource, /\$\{\{ inputs\.(?:model|effort|max-diff-bytes) \}\}/);
 assert.match(workflowSource, /^  review:\n(?:(?!^  \S)[\s\S])*?^      REVIEW_MODEL: gpt-6-sol$/m);
 assert.match(workflowSource, /^  review:\n(?:(?!^  \S)[\s\S])*?^      REVIEW_EFFORT: low$/m);
-assert.match(workflowSource, /^  review:\n(?:(?!^  \S)[\s\S])*?^      REVIEW_MAX_DIFF_BYTES: '5000000'$/m);
+assert.match(workflowSource, /^  review:\n(?:(?!^  \S)[\s\S])*?^      REVIEW_MAX_DIFF_BYTES: '100000000'$/m);
 assert.match(workflowSource, /^  publish:\n(?:(?!^  \S)[\s\S])*?^      REVIEW_MODEL: gpt-6-sol$/m);
 assert.match(workflowSource, /^  publish:\n(?:(?!^  \S)[\s\S])*?^      REVIEW_EFFORT: low$/m);
 assert.match(workflowSource, /MAX_DIFF_BYTES: \$\{\{ env\.REVIEW_MAX_DIFF_BYTES \}\}/);
