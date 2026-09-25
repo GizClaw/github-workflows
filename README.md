@@ -32,7 +32,9 @@ and `actions: write` so the reviewer can restore the latest per-PR Codex
 session artifact and delete superseded snapshots only after a replacement
 upload succeeds.
 
-Complete diffs up to 5,000,000 bytes are reviewed automatically. For a larger
+Complete binary-aware Git patches up to 5,000,000 bytes are reviewed
+automatically. Binary models, images, and other changed binary payloads count
+toward this limit even though their contents are not sent to the model. For a larger
 diff, an admin of the **calling repository** must post this line as a PR comment
 with the current full head commit SHA:
 
