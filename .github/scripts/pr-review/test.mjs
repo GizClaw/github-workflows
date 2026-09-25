@@ -154,6 +154,8 @@ assert.match(workflowSource, /^  review:\n(?:(?!^  \S)[\s\S])*?^      REVIEW_MAX
 assert.match(workflowSource, /^  review:\n(?:(?!^  \S)[\s\S])*?^      REVIEW_AUTOMATIC_MAX_DIFF_BYTES: '5000000'$/m);
 assert.match(workflowSource, /AUTOMATIC_MAX_DIFF_BYTES: \$\{\{ env\.REVIEW_AUTOMATIC_MAX_DIFF_BYTES \}\}/);
 assert.match(workflowSource, /LARGE_DIFF_APPROVED: \$\{\{ needs\.resolve\.outputs\.large_diff_approved \}\}/);
+assert.match(workflowSource, /PRIVATE_REPOSITORY: \$\{\{ needs\.resolve\.outputs\.private_repository \}\}/);
+assert.match(workflowSource, /private_repository', String\(pr\.base\.repo\?\.private === true\)/);
 assert.match(workflowSource, /getCollaboratorPermissionLevel/);
 assert.match(workflowSource, /^  publish:\n(?:(?!^  \S)[\s\S])*?^      REVIEW_MODEL: gpt-6-sol$/m);
 assert.match(workflowSource, /^  publish:\n(?:(?!^  \S)[\s\S])*?^      REVIEW_EFFORT: low$/m);
@@ -526,7 +528,7 @@ try {
   });
   assert.equal(plainPatch.status, 0);
   assert.ok(plainPatch.stdout.length < 1000);
-  const prepareBinary = (approved) => spawnSync(process.execPath, [
+  const prepareBinary = (approved, privateRepo = false, hardMax = "20000") => spawnSync(process.execPath, [
     path.join(path.dirname(new URL(import.meta.url).pathname), "prepare.mjs"),
   ], {
     cwd: binaryRepo,
@@ -538,9 +540,10 @@ try {
       PR_BASE_SHA: binaryBase,
       PR_HEAD_SHA: binaryHead,
       SESSION_KEY: "repo:1:pr:binary:v2",
-      MAX_DIFF_BYTES: "20000",
+      MAX_DIFF_BYTES: hardMax,
       AUTOMATIC_MAX_DIFF_BYTES: "4000",
       LARGE_DIFF_APPROVED: String(approved),
+      PRIVATE_REPOSITORY: String(privateRepo),
       CHUNK_TARGET_BYTES: "600",
       READINESS_CONTEXT_SHA256: "binary-context",
     },
@@ -549,6 +552,10 @@ try {
   assert.notEqual(blockedBinary.status, 0);
   assert.match(blockedBinary.stderr, /automatic reviews are limited to 4000 bytes/);
   assert.equal(prepareBinary(true).status, 0);
+  assert.equal(prepareBinary(false, true).status, 0);
+  const blockedPrivateHardCap = prepareBinary(false, true, "4000");
+  assert.notEqual(blockedPrivateHardCap.status, 0);
+  assert.match(blockedPrivateHardCap.stderr, /configured total limit is 4000 bytes/);
 
   const repo = path.join(temporary, "repo");
   fs.mkdirSync(repo);
@@ -590,12 +597,13 @@ try {
       MAX_DIFF_BYTES: "1000000",
       AUTOMATIC_MAX_DIFF_BYTES: "1000000",
       LARGE_DIFF_APPROVED: "false",
+      PRIVATE_REPOSITORY: "false",
       CHUNK_TARGET_BYTES: "600",
       READINESS_CONTEXT_SHA256: "context-v1",
     },
   });
   assert.equal(result.status, 0, result.stderr);
-  const prepareWithPolicy = (automaticMax, approved, hardMax = "1000000") =>
+  const prepareWithPolicy = (automaticMax, approved, hardMax = "1000000", privateRepo = false) =>
     spawnSync(process.execPath, [
       path.join(path.dirname(new URL(import.meta.url).pathname), "prepare.mjs"),
     ], {
@@ -611,6 +619,7 @@ try {
         MAX_DIFF_BYTES: hardMax,
         AUTOMATIC_MAX_DIFF_BYTES: automaticMax,
         LARGE_DIFF_APPROVED: String(approved),
+        PRIVATE_REPOSITORY: String(privateRepo),
         CHUNK_TARGET_BYTES: "600",
         READINESS_CONTEXT_SHA256: "context-v1",
       },
@@ -619,6 +628,7 @@ try {
   assert.notEqual(blockedAutomatic.status, 0);
   assert.match(blockedAutomatic.stderr, /automatic reviews are limited to 1000 bytes/);
   assert.equal(prepareWithPolicy("1000", true).status, 0);
+  assert.equal(prepareWithPolicy("1000", false, "1000000", true).status, 0);
   const blockedHardCap = prepareWithPolicy("1000", true, "1000");
   assert.notEqual(blockedHardCap.status, 0);
   assert.match(blockedHardCap.stderr, /configured total limit is 1000 bytes/);
@@ -660,6 +670,7 @@ try {
       MAX_DIFF_BYTES: "1000000",
       AUTOMATIC_MAX_DIFF_BYTES: "1000000",
       LARGE_DIFF_APPROVED: "false",
+      PRIVATE_REPOSITORY: "false",
       CHUNK_TARGET_BYTES: "600",
       READINESS_CONTEXT_SHA256: "context-v1",
     },
@@ -697,6 +708,7 @@ try {
       MAX_DIFF_BYTES: "1000000",
       AUTOMATIC_MAX_DIFF_BYTES: "1000000",
       LARGE_DIFF_APPROVED: "false",
+      PRIVATE_REPOSITORY: "false",
       CHUNK_TARGET_BYTES: "600",
       READINESS_CONTEXT_SHA256: "context-v1",
     },
@@ -757,8 +769,9 @@ try {
     PR_HEAD_SHA: mergedHead,
     SESSION_KEY: "repo:1:pr:2:v2",
     MAX_DIFF_BYTES: "1000000",
-      AUTOMATIC_MAX_DIFF_BYTES: "1000000",
-      LARGE_DIFF_APPROVED: "false",
+    AUTOMATIC_MAX_DIFF_BYTES: "1000000",
+    LARGE_DIFF_APPROVED: "false",
+    PRIVATE_REPOSITORY: "false",
     CHUNK_TARGET_BYTES: "600",
     READINESS_CONTEXT_SHA256: "context-v1",
   };
@@ -1106,8 +1119,9 @@ fs.writeFileSync(outputFile, JSON.stringify(result));
       env: { ...process.env, REPOSITORY_DIR: repo, PR_REVIEW_STATE_DIR: legacyState,
         PR_BASE_SHA: base, PR_HEAD_SHA: nextHead, SESSION_KEY: "repo:1:pr:2:v2",
         MAX_DIFF_BYTES: "1000000",
-      AUTOMATIC_MAX_DIFF_BYTES: "1000000",
-      LARGE_DIFF_APPROVED: "false", CHUNK_TARGET_BYTES: "600",
+        AUTOMATIC_MAX_DIFF_BYTES: "1000000",
+        LARGE_DIFF_APPROVED: "false",
+        PRIVATE_REPOSITORY: "false", CHUNK_TARGET_BYTES: "600",
         READINESS_CONTEXT_SHA256: "context-v1", GITHUB_OUTPUT: output },
     });
     assert.equal(prepared.status, 0, prepared.stderr);
@@ -1459,6 +1473,7 @@ fs.writeFileSync(outputFile, JSON.stringify(result));
       MAX_DIFF_BYTES: "1000000",
       AUTOMATIC_MAX_DIFF_BYTES: "1000000",
       LARGE_DIFF_APPROVED: "false",
+      PRIVATE_REPOSITORY: "false",
       CHUNK_TARGET_BYTES: "600",
       READINESS_CONTEXT_SHA256: "context-v1",
     },

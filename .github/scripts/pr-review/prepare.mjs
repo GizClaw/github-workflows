@@ -52,6 +52,7 @@ const maxDiffBytes = positiveInteger("MAX_DIFF_BYTES");
 const diffReadBufferBytes = maxDiffBytes + 64 * 1024;
 const automaticMaxDiffBytes = positiveInteger("AUTOMATIC_MAX_DIFF_BYTES");
 const largeDiffApproved = required("LARGE_DIFF_APPROVED") === "true";
+const privateRepository = required("PRIVATE_REPOSITORY") === "true";
 const chunkTargetBytes = positiveInteger("CHUNK_TARGET_BYTES");
 const ledgerPath = path.join(stateDir, "review-ledger.json");
 const generationsDir = path.join(stateDir, "generations");
@@ -97,7 +98,7 @@ if (fullDiff.length > maxDiffBytes) {
     `Pull-request diff is ${fullDiff.length} bytes; the configured total limit is ${maxDiffBytes} bytes.`,
   );
 }
-if (!largeDiffApproved && fullDiff.length > automaticMaxDiffBytes) {
+if (!privateRepository && !largeDiffApproved && fullDiff.length > automaticMaxDiffBytes) {
   throw new Error(
     `Pull-request diff is ${fullDiff.length} bytes; automatic reviews are limited to ${automaticMaxDiffBytes} bytes. A repository admin must comment @codex review approve ${headSha} on this PR to review this head.`,
   );

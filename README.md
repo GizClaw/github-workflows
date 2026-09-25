@@ -32,11 +32,12 @@ and `actions: write` so the reviewer can restore the latest per-PR Codex
 session artifact and delete superseded snapshots only after a replacement
 upload succeeds.
 
-Complete binary-aware Git patches up to 5,000,000 bytes are reviewed
-automatically. Binary models, images, and other changed binary payloads count
-toward this limit even though their contents are not sent to the model. For a larger
-diff, an admin of the **calling repository** must post this line as a PR comment
-with the current full head commit SHA:
+In public caller repositories, complete binary-aware Git patches up to
+5,000,000 bytes are reviewed automatically. Binary models, images, and other
+changed binary payloads count toward this limit even though their contents are
+not sent to the model. For a larger public-repository diff, an admin of the
+**calling repository** must post this line as a PR comment with the current
+full head commit SHA:
 
 ```text
 @codex review approve <40-character-head-sha>
@@ -45,8 +46,11 @@ with the current full head commit SHA:
 The shared reviewer checks the comment author's admin permission in the caller
 repository and the live head SHA before model work. A push requires a new
 approval. This uses the existing `issue_comment` trigger and works for public
-and private callers without a GitHub Environment or per-repository approver
-configuration. Diffs above 100,000,000 bytes remain rejected.
+callers without a GitHub Environment or per-repository approver configuration.
+Private caller repositories skip the 5,000,000-byte approval gate and review
+automatically. The caller's base repository privacy comes from GitHub's PR API;
+unknown privacy is treated as public. Diffs above 100,000,000 bytes remain
+rejected in every repository.
 
 ## Behavior
 
@@ -155,7 +159,7 @@ configuration. Diffs above 100,000,000 bytes remain rejected.
   `pull_request_target` workflow and use the caller's explicitly forwarded
   secret. Secrets from the contributor's fork are not imported or used.
 - Automatic PR events permit an external contributor to consume review
-  requests up to the 5,000,000-byte automatic limit. Use a
+  requests up to the 5,000,000-byte automatic limit in public callers. Use a
   dedicated API project with appropriate usage limits and restrict the
   organization secret to selected repositories.
 - Complete diffs larger than 100,000,000 bytes fail before Codex runs. The
