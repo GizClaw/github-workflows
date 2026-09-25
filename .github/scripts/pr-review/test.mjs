@@ -144,6 +144,22 @@ const workflowSource = fs.readFileSync(
   ),
   "utf8",
 );
+// Deprecated caller inputs must not override the policy that is used for
+// execution, session restore, readiness evidence, or review publication.
+assert.doesNotMatch(workflowSource, /\$\{\{ inputs\.(?:model|effort|max-diff-bytes) \}\}/);
+assert.match(workflowSource, /^  review:\n(?:(?!^  \S)[\s\S])*?^      REVIEW_MODEL: gpt-6-sol$/m);
+assert.match(workflowSource, /^  review:\n(?:(?!^  \S)[\s\S])*?^      REVIEW_EFFORT: low$/m);
+assert.match(workflowSource, /^  review:\n(?:(?!^  \S)[\s\S])*?^      REVIEW_MAX_DIFF_BYTES: '100000000'$/m);
+assert.match(workflowSource, /^  publish:\n(?:(?!^  \S)[\s\S])*?^      REVIEW_MODEL: gpt-6-sol$/m);
+assert.match(workflowSource, /^  publish:\n(?:(?!^  \S)[\s\S])*?^      REVIEW_EFFORT: low$/m);
+assert.match(workflowSource, /MAX_DIFF_BYTES: \$\{\{ env\.REVIEW_MAX_DIFF_BYTES \}\}/);
+assert.equal((workflowSource.match(/MODEL: \$\{\{ env\.REVIEW_MODEL \}\}/g) ?? []).length, 5);
+assert.equal((workflowSource.match(/EFFORT: \$\{\{ env\.REVIEW_EFFORT \}\}/g) ?? []).length, 5);
+const dispatchSource = fs.readFileSync(
+  path.join(path.dirname(new URL(import.meta.url).pathname), "..", "..", "workflows", "openai-pr-review-dispatch.yml"),
+  "utf8",
+);
+assert.doesNotMatch(dispatchSource, /^      (?:model|effort|max-diff-bytes):/m);
 assert.match(
   workflowSource,
   /^  rerun-guard:\n(?:(?!^  \S)[\s\S])*?RUN_ATTEMPT: \$\{\{ github\.run_attempt \}\}(?:(?!^  \S)[\s\S])*?if \[ "\$RUN_ATTEMPT" -ne 1 \]; then(?:(?!^  \S)[\s\S])*?exit 1$/m,
