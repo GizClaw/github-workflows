@@ -5,6 +5,8 @@ export const REVIEW_REQUEST_SCHEMA_VERSION = 1;
 // spaces as an indented code block, so the trigger accepts at most three.
 export const REVIEW_REQUEST_COMMAND =
   /^ {0,3}@codex(?:[ \t]+review\b.*?)?[ \t]*$/im;
+const LARGE_DIFF_APPROVAL_COMMAND =
+  /^ {0,3}@codex[ \t]+review[ \t]+approve[ \t]+([0-9a-f]{40})[ \t]*$/im;
 
 const FENCE = /^ {0,3}(`{3,}|~{3,})/;
 const BLOCK_QUOTE = /^ {0,3}>/;
@@ -99,4 +101,16 @@ export function isReviewRequestComment(comment) {
   const login = String(comment?.user_login ?? "");
   if (type === "bot" || /\[bot\]$/i.test(login)) return false;
   return REVIEW_REQUEST_COMMAND.test(stripQuotedText(comment?.body));
+}
+
+export function largeDiffApprovalSha(comment) {
+  const type = String(comment?.user_type ?? "").toLowerCase();
+  const login = String(comment?.user_login ?? "");
+  if (type === "bot" || /\[bot\]$/i.test(login)) return null;
+  return LARGE_DIFF_APPROVAL_COMMAND.exec(stripQuotedText(comment?.body))?.[1]?.toLowerCase() ?? null;
+}
+
+export function isAdminLargeDiffApproval({ comment, permission, headSha }) {
+  return permission === "admin"
+    && largeDiffApprovalSha(comment) === String(headSha).toLowerCase();
 }

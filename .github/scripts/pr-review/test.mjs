@@ -150,6 +150,10 @@ assert.doesNotMatch(workflowSource, /\$\{\{ inputs\.(?:model|effort|max-diff-byt
 assert.match(workflowSource, /^  review:\n(?:(?!^  \S)[\s\S])*?^      REVIEW_MODEL: gpt-6-sol$/m);
 assert.match(workflowSource, /^  review:\n(?:(?!^  \S)[\s\S])*?^      REVIEW_EFFORT: low$/m);
 assert.match(workflowSource, /^  review:\n(?:(?!^  \S)[\s\S])*?^      REVIEW_MAX_DIFF_BYTES: '100000000'$/m);
+assert.match(workflowSource, /^  review:\n(?:(?!^  \S)[\s\S])*?^      REVIEW_AUTOMATIC_MAX_DIFF_BYTES: '5000000'$/m);
+assert.match(workflowSource, /AUTOMATIC_MAX_DIFF_BYTES: \$\{\{ env\.REVIEW_AUTOMATIC_MAX_DIFF_BYTES \}\}/);
+assert.match(workflowSource, /LARGE_DIFF_APPROVED: \$\{\{ needs\.resolve\.outputs\.large_diff_approved \}\}/);
+assert.match(workflowSource, /getCollaboratorPermissionLevel/);
 assert.match(workflowSource, /^  publish:\n(?:(?!^  \S)[\s\S])*?^      REVIEW_MODEL: gpt-6-sol$/m);
 assert.match(workflowSource, /^  publish:\n(?:(?!^  \S)[\s\S])*?^      REVIEW_EFFORT: low$/m);
 assert.match(workflowSource, /MAX_DIFF_BYTES: \$\{\{ env\.REVIEW_MAX_DIFF_BYTES \}\}/);
@@ -537,11 +541,40 @@ try {
       PR_HEAD_SHA: head,
       SESSION_KEY: "repo:1:pr:2:v2",
       MAX_DIFF_BYTES: "1000000",
+      AUTOMATIC_MAX_DIFF_BYTES: "1000000",
+      LARGE_DIFF_APPROVED: "false",
       CHUNK_TARGET_BYTES: "600",
       READINESS_CONTEXT_SHA256: "context-v1",
     },
   });
   assert.equal(result.status, 0, result.stderr);
+  const prepareWithPolicy = (automaticMax, approved, hardMax = "1000000") =>
+    spawnSync(process.execPath, [
+      path.join(path.dirname(new URL(import.meta.url).pathname), "prepare.mjs"),
+    ], {
+      cwd: repo,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        REPOSITORY_DIR: repo,
+        PR_REVIEW_STATE_DIR: state,
+        PR_BASE_SHA: base,
+        PR_HEAD_SHA: head,
+        SESSION_KEY: "repo:1:pr:2:v2",
+        MAX_DIFF_BYTES: hardMax,
+        AUTOMATIC_MAX_DIFF_BYTES: automaticMax,
+        LARGE_DIFF_APPROVED: String(approved),
+        CHUNK_TARGET_BYTES: "600",
+        READINESS_CONTEXT_SHA256: "context-v1",
+      },
+    });
+  const blockedAutomatic = prepareWithPolicy("1000", false);
+  assert.notEqual(blockedAutomatic.status, 0);
+  assert.match(blockedAutomatic.stderr, /automatic reviews are limited to 1000 bytes/);
+  assert.equal(prepareWithPolicy("1000", true).status, 0);
+  const blockedHardCap = prepareWithPolicy("1000", true, "1000");
+  assert.notEqual(blockedHardCap.status, 0);
+  assert.match(blockedHardCap.stderr, /configured total limit is 1000 bytes/);
   const ledger = JSON.parse(fs.readFileSync(
     path.join(state, "review-ledger.json"),
     "utf8",
@@ -578,6 +611,8 @@ try {
       PR_HEAD_SHA: head,
       SESSION_KEY: "repo:1:pr:2:v2",
       MAX_DIFF_BYTES: "1000000",
+      AUTOMATIC_MAX_DIFF_BYTES: "1000000",
+      LARGE_DIFF_APPROVED: "false",
       CHUNK_TARGET_BYTES: "600",
       READINESS_CONTEXT_SHA256: "context-v1",
     },
@@ -613,6 +648,8 @@ try {
       PR_HEAD_SHA: nextHead,
       SESSION_KEY: "repo:1:pr:2:v2",
       MAX_DIFF_BYTES: "1000000",
+      AUTOMATIC_MAX_DIFF_BYTES: "1000000",
+      LARGE_DIFF_APPROVED: "false",
       CHUNK_TARGET_BYTES: "600",
       READINESS_CONTEXT_SHA256: "context-v1",
     },
@@ -673,6 +710,8 @@ try {
     PR_HEAD_SHA: mergedHead,
     SESSION_KEY: "repo:1:pr:2:v2",
     MAX_DIFF_BYTES: "1000000",
+      AUTOMATIC_MAX_DIFF_BYTES: "1000000",
+      LARGE_DIFF_APPROVED: "false",
     CHUNK_TARGET_BYTES: "600",
     READINESS_CONTEXT_SHA256: "context-v1",
   };
@@ -1019,7 +1058,9 @@ fs.writeFileSync(outputFile, JSON.stringify(result));
       cwd: repo, encoding: "utf8",
       env: { ...process.env, REPOSITORY_DIR: repo, PR_REVIEW_STATE_DIR: legacyState,
         PR_BASE_SHA: base, PR_HEAD_SHA: nextHead, SESSION_KEY: "repo:1:pr:2:v2",
-        MAX_DIFF_BYTES: "1000000", CHUNK_TARGET_BYTES: "600",
+        MAX_DIFF_BYTES: "1000000",
+      AUTOMATIC_MAX_DIFF_BYTES: "1000000",
+      LARGE_DIFF_APPROVED: "false", CHUNK_TARGET_BYTES: "600",
         READINESS_CONTEXT_SHA256: "context-v1", GITHUB_OUTPUT: output },
     });
     assert.equal(prepared.status, 0, prepared.stderr);
@@ -1369,6 +1410,8 @@ fs.writeFileSync(outputFile, JSON.stringify(result));
       PR_HEAD_SHA: mergedPrHead,
       SESSION_KEY: "repo:1:pr:2:v2",
       MAX_DIFF_BYTES: "1000000",
+      AUTOMATIC_MAX_DIFF_BYTES: "1000000",
+      LARGE_DIFF_APPROVED: "false",
       CHUNK_TARGET_BYTES: "600",
       READINESS_CONTEXT_SHA256: "context-v1",
     },

@@ -2,12 +2,47 @@
 
 import assert from "node:assert/strict";
 import {
+  isAdminLargeDiffApproval,
   isReviewRequestComment,
+  largeDiffApprovalSha,
   REVIEW_REQUEST_SCHEMA_VERSION,
   stripQuotedText,
 } from "./common.mjs";
 
 assert.equal(REVIEW_REQUEST_SCHEMA_VERSION, 1);
+
+const approvalHead = "a".repeat(40);
+const approvalComment = {
+  body: `@codex review approve ${approvalHead}`,
+  user_type: "User",
+  user_login: "admin-user",
+};
+assert.equal(isReviewRequestComment(approvalComment), true);
+assert.equal(largeDiffApprovalSha(approvalComment), approvalHead);
+assert.equal(isAdminLargeDiffApproval({
+  comment: approvalComment, permission: "admin", headSha: approvalHead,
+}), true);
+for (const permission of ["write", "maintain", "read", "none", undefined]) {
+  assert.equal(isAdminLargeDiffApproval({
+    comment: approvalComment, permission, headSha: approvalHead,
+  }), false);
+}
+assert.equal(isAdminLargeDiffApproval({
+  comment: approvalComment, permission: "admin", headSha: "b".repeat(40),
+}), false);
+for (const body of [
+  `> @codex review approve ${approvalHead}`,
+  `\`@codex review approve ${approvalHead}\``,
+  `\`\`\`\n@codex review approve ${approvalHead}\n\`\`\``,
+  `@codex review approve ${approvalHead.slice(1)}`,
+  `@codex review approve ${approvalHead} extra`,
+  `@codex review ${approvalHead}`,
+]) {
+  assert.equal(largeDiffApprovalSha({ ...approvalComment, body }), null, body);
+}
+assert.equal(largeDiffApprovalSha({
+  ...approvalComment, user_type: "Bot",
+}), null);
 
 const cases = [
   ["bare mention", "@codex", true],

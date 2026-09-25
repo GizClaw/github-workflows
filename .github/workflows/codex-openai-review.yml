@@ -97,6 +97,7 @@ jobs:
       base_ref: ${{ steps.pr.outputs.base_ref }}
       head_sha: ${{ steps.pr.outputs.head_sha }}
       request_comment_id: ${{ steps.pr.outputs.request_comment_id }}
+      large_diff_approved: ${{ steps.pr.outputs.large_diff_approved }}
     steps:
       - name: Check out the exact comment-trigger implementation
         if: github.event_name == 'issue_comment'
@@ -158,7 +159,40 @@ jobs:
             const eligible = pr.state === 'open'
               && !pr.draft
               && (sameRepository || trustedBaseEvent);
+            let largeDiffApproved = false;
+            if (event === 'issue_comment' && process.env.COMMENT_REVIEW_REQUESTED === 'true') {
+              const { pathToFileURL } = require('node:url');
+              const path = require('node:path');
+              const source = pathToFileURL(path.join(
+                process.env.GITHUB_WORKSPACE,
+                '.openai-pr-review-trigger-source',
+                '.github/scripts/review-request/common.mjs',
+              )).href;
+              const { largeDiffApprovalSha, isAdminLargeDiffApproval } = await import(source);
+              const comment = {
+                body: context.payload.comment.body,
+                user_type: context.payload.comment.user.type,
+                user_login: context.payload.comment.user.login,
+              };
+              if (largeDiffApprovalSha(comment)) {
+                try {
+                  const { data: access } = await github.rest.repos.getCollaboratorPermissionLevel({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    username: comment.user_login,
+                  });
+                  largeDiffApproved = isAdminLargeDiffApproval({
+                    comment,
+                    permission: access.permission,
+                    headSha: pr.head.sha,
+                  });
+                } catch (error) {
+                  core.warning(`Could not verify large-diff approval permission: ${error.message}`);
+                }
+              }
+            }
             core.setOutput('eligible', String(eligible));
+            core.setOutput('large_diff_approved', String(largeDiffApproved));
             core.setOutput('number', String(pr.number));
             core.setOutput('base_sha', pr.base.sha);
             core.setOutput('base_ref', pr.base.ref);
@@ -320,6 +354,7 @@ jobs:
       REVIEW_MODEL: gpt-6-sol
       REVIEW_EFFORT: low
       REVIEW_MAX_DIFF_BYTES: '100000000'
+      REVIEW_AUTOMATIC_MAX_DIFF_BYTES: '5000000'
       PULL_REQUEST_NUMBER: ${{ needs.resolve.outputs.number }}
       PR_BASE_SHA: ${{ needs.resolve.outputs.base_sha }}
       PR_BASE_REF: ${{ needs.resolve.outputs.base_ref }}
@@ -844,6 +879,8 @@ jobs:
         env:
           REPOSITORY_DIR: ${{ env.PR_DIFF_REPOSITORY }}
           MAX_DIFF_BYTES: ${{ env.REVIEW_MAX_DIFF_BYTES }}
+          AUTOMATIC_MAX_DIFF_BYTES: ${{ env.REVIEW_AUTOMATIC_MAX_DIFF_BYTES }}
+          LARGE_DIFF_APPROVED: ${{ needs.resolve.outputs.large_diff_approved }}
           CHUNK_TARGET_BYTES: ${{ inputs.chunk-target-bytes }}
           READINESS_CONTEXT_SHA256: ${{ steps.prepare_readiness.outputs.context_sha256 }}
         run: node "$REVIEWER_SOURCE_DIR/.github/scripts/pr-review/prepare.mjs"
