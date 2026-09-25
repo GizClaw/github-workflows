@@ -98,6 +98,7 @@ jobs:
       head_sha: ${{ steps.pr.outputs.head_sha }}
       request_comment_id: ${{ steps.pr.outputs.request_comment_id }}
       large_diff_approved: ${{ steps.pr.outputs.large_diff_approved }}
+      private_repository: ${{ steps.pr.outputs.private_repository }}
     steps:
       - name: Check out the exact comment-trigger implementation
         if: github.event_name == 'issue_comment'
@@ -193,6 +194,7 @@ jobs:
             }
             core.setOutput('eligible', String(eligible));
             core.setOutput('large_diff_approved', String(largeDiffApproved));
+            core.setOutput('private_repository', String(pr.base.repo?.private === true));
             core.setOutput('number', String(pr.number));
             core.setOutput('base_sha', pr.base.sha);
             core.setOutput('base_ref', pr.base.ref);
@@ -881,6 +883,7 @@ jobs:
           MAX_DIFF_BYTES: ${{ env.REVIEW_MAX_DIFF_BYTES }}
           AUTOMATIC_MAX_DIFF_BYTES: ${{ env.REVIEW_AUTOMATIC_MAX_DIFF_BYTES }}
           LARGE_DIFF_APPROVED: ${{ needs.resolve.outputs.large_diff_approved }}
+          PRIVATE_REPOSITORY: ${{ needs.resolve.outputs.private_repository }}
           CHUNK_TARGET_BYTES: ${{ inputs.chunk-target-bytes }}
           READINESS_CONTEXT_SHA256: ${{ steps.prepare_readiness.outputs.context_sha256 }}
         run: node "$REVIEWER_SOURCE_DIR/.github/scripts/pr-review/prepare.mjs"
