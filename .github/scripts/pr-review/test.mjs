@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { randomBytes } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import {
@@ -502,6 +503,52 @@ try {
   const first = treeHash(temporary);
   fs.writeFileSync(path.join(temporary, "nested", "b"), "three");
   assert.notEqual(treeHash(temporary), first);
+
+  const binaryRepo = path.join(temporary, "binary-repo");
+  fs.mkdirSync(binaryRepo);
+  const runBinaryGit = (...args) => {
+    const result = spawnSync("git", args, { cwd: binaryRepo, encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim();
+  };
+  runBinaryGit("init", "-q");
+  runBinaryGit("config", "user.name", "Review Test");
+  runBinaryGit("config", "user.email", "review@example.com");
+  runBinaryGit("commit", "--allow-empty", "-qm", "base");
+  const binaryBase = runBinaryGit("rev-parse", "HEAD");
+  fs.writeFileSync(path.join(binaryRepo, "model.glb"),
+    Buffer.concat([Buffer.from([0]), randomBytes(8192)]));
+  runBinaryGit("add", "model.glb");
+  runBinaryGit("commit", "-qm", "binary model");
+  const binaryHead = runBinaryGit("rev-parse", "HEAD");
+  const plainPatch = spawnSync("git", ["diff", `${binaryBase}..${binaryHead}`], {
+    cwd: binaryRepo, encoding: null,
+  });
+  assert.equal(plainPatch.status, 0);
+  assert.ok(plainPatch.stdout.length < 1000);
+  const prepareBinary = (approved) => spawnSync(process.execPath, [
+    path.join(path.dirname(new URL(import.meta.url).pathname), "prepare.mjs"),
+  ], {
+    cwd: binaryRepo,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      REPOSITORY_DIR: binaryRepo,
+      PR_REVIEW_STATE_DIR: path.join(temporary, "binary-state"),
+      PR_BASE_SHA: binaryBase,
+      PR_HEAD_SHA: binaryHead,
+      SESSION_KEY: "repo:1:pr:binary:v2",
+      MAX_DIFF_BYTES: "20000",
+      AUTOMATIC_MAX_DIFF_BYTES: "4000",
+      LARGE_DIFF_APPROVED: String(approved),
+      CHUNK_TARGET_BYTES: "600",
+      READINESS_CONTEXT_SHA256: "binary-context",
+    },
+  });
+  const blockedBinary = prepareBinary(false);
+  assert.notEqual(blockedBinary.status, 0);
+  assert.match(blockedBinary.stderr, /automatic reviews are limited to 4000 bytes/);
+  assert.equal(prepareBinary(true).status, 0);
 
   const repo = path.join(temporary, "repo");
   fs.mkdirSync(repo);

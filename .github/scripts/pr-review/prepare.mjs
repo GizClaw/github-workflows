@@ -86,7 +86,9 @@ const diffArgs = (from, to, tripleDot = false) => [
 ];
 
 const mergeBase = String(git(repo, ["merge-base", baseTipSha, headSha])).trim();
-const fullDiff = Buffer.from(git(repo, diffArgs(mergeBase, headSha), {
+// Include binary payloads in admission and identity without putting them in
+// the text-oriented per-file patches sent to the reviewer.
+const fullDiff = Buffer.from(git(repo, [...diffArgs(mergeBase, headSha), "--binary"], {
   encoding: null,
   maxBuffer: diffReadBufferBytes,
 }));
