@@ -16,10 +16,15 @@ only the `uses` reference from the local path to the protected release:
 uses: GizClaw/github-workflows/.github/workflows/codex-openai-review.yml@v1
 ```
 
-It must pass an `OPENAI_API_KEY` Actions secret explicitly. Set `model`,
-`effort`, `review-instructions`, `issue-review-instructions`, and
+It must pass an `OPENAI_API_KEY` Actions secret explicitly. Set
+`review-instructions`, `issue-review-instructions`, and
 `pr-readiness-instructions` in the caller to match the repository's trusted
-policy. The caller must grant `checks: write` so the
+policy. The shared reviewer always uses `gpt-6-sol` with `low` reasoning
+effort (the Codex setting corresponding to a light review) and accepts complete
+diffs up to 5,000,000 bytes. The legacy `model`, `effort`, and `max-diff-bytes`
+inputs remain accepted for pinned callers but are ignored. Existing callers
+must update their pinned workflow reference to receive this policy; they can
+then remove those three inputs. The caller must grant `checks: write` so the
 shared reviewer can expose its lifecycle on the reviewed PR head, and
 `pull-requests: write` for request reactions on PR comments and native review
 publication. It must also grant `issues: write` for Issue-triggered refreshes
@@ -137,10 +142,9 @@ upload succeeds.
   review requests when opening, editing, or pushing to an eligible PR. Use a
   dedicated API project with appropriate usage limits and restrict the
   organization secret to selected repositories.
-- Complete diffs larger than 1 MB fail before Codex runs by default, limiting
-  untrusted input and avoiding unbounded model usage. Callers can explicitly
-  set `max-diff-bytes` and `chunk-target-bytes` when their cost policy permits
-  larger reviews.
+- Complete diffs larger than 5,000,000 bytes fail before Codex runs. The
+  `chunk-target-bytes` input still controls deterministic chunk sizing; the
+  legacy `max-diff-bytes` input no longer changes the total limit.
 - The reviewer checks out only the trusted base commit, reads the PR diff as
   untrusted data, never checks out or executes PR-head code, and publishes
   validated native inline review comments only on added lines.

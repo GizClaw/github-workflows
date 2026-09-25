@@ -30,8 +30,6 @@ jobs:
     if: github.event_name != 'issues'
     uses: ./.github/workflows/codex-openai-review.yml
     with:
-      model: gpt-5.6-terra
-      effort: medium
       review-instructions: >-
         Review the pull-request diff and report actionable findings.
       issue-review-instructions: >-
@@ -101,8 +99,6 @@ jobs:
         pull_request_number: ${{ fromJSON(needs.resolve_linked_prs.outputs.pull_requests) }}
     uses: ./.github/workflows/codex-openai-review.yml
     with:
-      model: gpt-5.6-terra
-      effort: medium
       review-instructions: >-
         Review the pull-request diff and report actionable findings.
       issue-review-instructions: >-

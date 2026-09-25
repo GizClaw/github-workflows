@@ -4,14 +4,14 @@ on:
   workflow_call:
     inputs:
       model:
-        description: OpenAI model used by Codex for this review.
+        description: Deprecated compatibility input; the shared reviewer always uses gpt-6-sol.
         required: false
-        default: gpt-5.6-terra
+        default: gpt-6-sol
         type: string
       effort:
-        description: Reasoning effort supplied to Codex for this review.
+        description: Deprecated compatibility input; the shared reviewer always uses low reasoning effort.
         required: false
-        default: medium
+        default: low
         type: string
       codex-version:
         description: Exact Codex CLI version used so persisted sessions remain compatible.
@@ -19,9 +19,9 @@ on:
         default: 0.145.0
         type: string
       max-diff-bytes:
-        description: Maximum complete base-to-head diff size accepted for one PR.
+        description: Deprecated compatibility input; the shared reviewer always accepts up to 5000000 diff bytes.
         required: false
-        default: 1000000
+        default: 5000000
         type: number
       chunk-target-bytes:
         description: Deterministic target size for each first-review or incremental diff chunk.
@@ -317,6 +317,9 @@ jobs:
           || (steps.evaluate_readiness.outcome == 'failure' && 'Could not produce structured PR readiness evidence.')
           || '' }}
     env:
+      REVIEW_MODEL: gpt-6-sol
+      REVIEW_EFFORT: low
+      REVIEW_MAX_DIFF_BYTES: '5000000'
       PULL_REQUEST_NUMBER: ${{ needs.resolve.outputs.number }}
       PR_BASE_SHA: ${{ needs.resolve.outputs.base_sha }}
       PR_BASE_REF: ${{ needs.resolve.outputs.base_ref }}
@@ -691,8 +694,8 @@ jobs:
         env:
           EXPECTED_ARTIFACT_ID: ${{ steps.find_session.outputs.artifact_id }}
           EXPECTED_CODEX_VERSION: ${{ inputs.codex-version }}
-          EXPECTED_MODEL: ${{ inputs.model }}
-          EXPECTED_EFFORT: ${{ inputs.effort }}
+          EXPECTED_MODEL: ${{ env.REVIEW_MODEL }}
+          EXPECTED_EFFORT: ${{ env.REVIEW_EFFORT }}
           REPOSITORY_ID: ${{ github.repository_id }}
           REVIEW_INSTRUCTIONS: >-
             ${{ inputs.review-instructions }}
@@ -840,7 +843,7 @@ jobs:
         id: prepare_diff
         env:
           REPOSITORY_DIR: ${{ env.PR_DIFF_REPOSITORY }}
-          MAX_DIFF_BYTES: ${{ inputs.max-diff-bytes }}
+          MAX_DIFF_BYTES: ${{ env.REVIEW_MAX_DIFF_BYTES }}
           CHUNK_TARGET_BYTES: ${{ inputs.chunk-target-bytes }}
           READINESS_CONTEXT_SHA256: ${{ steps.prepare_readiness.outputs.context_sha256 }}
         run: node "$REVIEWER_SOURCE_DIR/.github/scripts/pr-review/prepare.mjs"
@@ -879,8 +882,8 @@ jobs:
           GENERATION_KEY: ${{ steps.prepare_diff.outputs.generation_key }}
           GENERATION_REUSED: ${{ steps.prepare_diff.outputs.reused }}
           RESUMED_SESSION_ID: ${{ steps.restore_session.outputs.session_id }}
-          MODEL: ${{ inputs.model }}
-          EFFORT: ${{ inputs.effort }}
+          MODEL: ${{ env.REVIEW_MODEL }}
+          EFFORT: ${{ env.REVIEW_EFFORT }}
           REVIEW_INSTRUCTIONS: ${{ inputs.review-instructions }}
           ISSUE_REVIEW_INSTRUCTIONS: ${{ inputs.issue-review-instructions }}
           PR_REVIEW_INSTRUCTIONS: ${{ inputs.pr-readiness-instructions }}
@@ -893,8 +896,8 @@ jobs:
         env:
           REVIEW: ${{ steps.run_review.outputs.review }}
           WORKFLOW_SOURCE_SHA: ${{ job.workflow_sha }}
-          MODEL: ${{ inputs.model }}
-          EFFORT: ${{ inputs.effort }}
+          MODEL: ${{ env.REVIEW_MODEL }}
+          EFFORT: ${{ env.REVIEW_EFFORT }}
         run: >-
           node
           "$REVIEWER_SOURCE_DIR/.github/scripts/pr-readiness/evaluate.mjs"
@@ -921,8 +924,8 @@ jobs:
         continue-on-error: true
         env:
           CODEX_VERSION: ${{ inputs.codex-version }}
-          MODEL: ${{ inputs.model }}
-          EFFORT: ${{ inputs.effort }}
+          MODEL: ${{ env.REVIEW_MODEL }}
+          EFFORT: ${{ env.REVIEW_EFFORT }}
           REPOSITORY_ID: ${{ github.repository_id }}
           WORKFLOW_SOURCE_SHA: ${{ job.workflow_sha }}
           REVIEW_INSTRUCTIONS: >-
@@ -1179,6 +1182,9 @@ jobs:
       contents: read
       issues: read
       pull-requests: write
+    env:
+      REVIEW_MODEL: gpt-6-sol
+      REVIEW_EFFORT: low
     outputs:
       failure_reason: >-
         ${{ (steps.verify_identity.outcome == 'failure'
@@ -1216,8 +1222,8 @@ jobs:
         env:
           REVIEW: ${{ needs.review.outputs.review }}
           READINESS_EVIDENCE: ${{ needs.review.outputs.readiness_evidence }}
-          MODEL: ${{ inputs.model }}
-          EFFORT: ${{ inputs.effort }}
+          MODEL: ${{ env.REVIEW_MODEL }}
+          EFFORT: ${{ env.REVIEW_EFFORT }}
           DURATION_SECONDS: ${{ needs.review.outputs.duration_seconds }}
           USAGE_AVAILABLE: ${{ needs.review.outputs.usage_available }}
           INPUT_TOKENS: ${{ needs.review.outputs.input_tokens }}
