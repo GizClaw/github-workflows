@@ -32,6 +32,20 @@ and `actions: write` so the reviewer can restore the latest per-PR Codex
 session artifact and delete superseded snapshots only after a replacement
 upload succeeds.
 
+Complete diffs up to 5,000,000 bytes are reviewed automatically. For a larger
+diff, an admin of the **calling repository** must post this line as a PR comment
+with the current full head commit SHA:
+
+```text
+@codex review approve <40-character-head-sha>
+```
+
+The shared reviewer checks the comment author's admin permission in the caller
+repository and the live head SHA before model work. A push requires a new
+approval. This uses the existing `issue_comment` trigger and works for public
+and private callers without a GitHub Environment or per-repository approver
+configuration. Diffs above 100,000,000 bytes remain rejected.
+
 ## Behavior
 
 - Reviews an open, non-draft PR when it is opened, reopened, edited, marked
@@ -138,8 +152,8 @@ upload succeeds.
 - Fork PRs run through the caller repository's trusted default-branch
   `pull_request_target` workflow and use the caller's explicitly forwarded
   secret. Secrets from the contributor's fork are not imported or used.
-- Automatic PR events intentionally permit an external contributor to consume
-  review requests when opening, editing, or pushing to an eligible PR. Use a
+- Automatic PR events permit an external contributor to consume review
+  requests up to the 5,000,000-byte automatic limit. Use a
   dedicated API project with appropriate usage limits and restrict the
   organization secret to selected repositories.
 - Complete diffs larger than 100,000,000 bytes fail before Codex runs. The

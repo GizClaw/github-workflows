@@ -48,6 +48,10 @@ const headSha = required("PR_HEAD_SHA");
 const sessionKey = required("SESSION_KEY");
 const readinessContextSha256 = required("READINESS_CONTEXT_SHA256");
 const maxDiffBytes = positiveInteger("MAX_DIFF_BYTES");
+// Leave a small read margin so the explicit size check reports the limit.
+const diffReadBufferBytes = maxDiffBytes + 64 * 1024;
+const automaticMaxDiffBytes = positiveInteger("AUTOMATIC_MAX_DIFF_BYTES");
+const largeDiffApproved = required("LARGE_DIFF_APPROVED") === "true";
 const chunkTargetBytes = positiveInteger("CHUNK_TARGET_BYTES");
 const ledgerPath = path.join(stateDir, "review-ledger.json");
 const generationsDir = path.join(stateDir, "generations");
@@ -84,10 +88,16 @@ const diffArgs = (from, to, tripleDot = false) => [
 const mergeBase = String(git(repo, ["merge-base", baseTipSha, headSha])).trim();
 const fullDiff = Buffer.from(git(repo, diffArgs(mergeBase, headSha), {
   encoding: null,
+  maxBuffer: diffReadBufferBytes,
 }));
 if (fullDiff.length > maxDiffBytes) {
   throw new Error(
     `Pull-request diff is ${fullDiff.length} bytes; the configured total limit is ${maxDiffBytes} bytes.`,
+  );
+}
+if (!largeDiffApproved && fullDiff.length > automaticMaxDiffBytes) {
+  throw new Error(
+    `Pull-request diff is ${fullDiff.length} bytes; automatic reviews are limited to ${automaticMaxDiffBytes} bytes. A repository admin must comment @codex review approve ${headSha} on this PR to review this head.`,
   );
 }
 const effectiveDiffSha256 = sha256(fullDiff);
@@ -217,7 +227,7 @@ function filePatch(record, from, to, tripleDot) {
     ...diffArgs(from, to, tripleDot),
     "--",
     ...paths,
-  ]));
+  ], { maxBuffer: diffReadBufferBytes }));
 }
 
 function addedLines(patchText) {
