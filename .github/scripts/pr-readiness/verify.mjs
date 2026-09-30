@@ -1,6 +1,10 @@
 #!/usr/bin/env node
 
 import fs from "node:fs";
+import {
+  collectClosingIssues,
+  graphqlIssueFetcher,
+} from "./closing-issues.mjs";
 import { analyzePullRequest } from "./common.mjs";
 
 const required = (name) => {
@@ -9,18 +13,14 @@ const required = (name) => {
   return value;
 };
 
-async function fetchPullRequest(after = null) {
-  if (process.env.PR_READINESS_VERIFY_INPUT_FILE) {
-    const payload = JSON.parse(fs.readFileSync(
-      process.env.PR_READINESS_VERIFY_INPUT_FILE,
-      "utf8",
-    ));
-    if (payload.errors?.length) {
-      throw new Error(`GitHub GraphQL failed: ${payload.errors[0].message}`);
-    }
-    return payload.data ?? payload;
-  }
-  const [owner, repo] = required("GITHUB_REPOSITORY").split("/");
+const fixture = process.env.PR_READINESS_VERIFY_INPUT_FILE
+  ? JSON.parse(fs.readFileSync(
+    process.env.PR_READINESS_VERIFY_INPUT_FILE,
+    "utf8",
+  ))
+  : null;
+
+async function graphqlRequest(query, variables = {}) {
   const response = await fetch(
     process.env.GITHUB_GRAPHQL_URL ?? "https://api.github.com/graphql",
     {
@@ -30,81 +30,56 @@ async function fetchPullRequest(after = null) {
         "content-type": "application/json",
         "user-agent": "openai-pr-readiness",
       },
-      body: JSON.stringify({
-        query: `
-          query($owner: String!, $repo: String!, $number: Int!, $after: String) {
-            repository(owner: $owner, name: $repo) {
-              nameWithOwner
-              pullRequest(number: $number) {
-                title
-                body
-                baseRefOid
-                headRefOid
-                closingIssuesReferences(first: 100) {
-                  totalCount
-                  nodes {
-                    repository { nameWithOwner }
-                    number
-                    title
-                    body
-                    state
-                    issueType { name }
-                    parent { number }
-                    subIssues(first: 100) {
-                      totalCount
-                      nodes {
-                        repository { nameWithOwner }
-                        number
-                        state
-                      }
-                    }
-                    blockedBy(first: 100) {
-                      totalCount
-                      nodes {
-                        repository { nameWithOwner }
-                        number
-                        state
-                      }
-                    }
-                    blocking(first: 100) {
-                      totalCount
-                      nodes {
-                        repository { nameWithOwner }
-                        number
-                        state
-                      }
-                    }
-                  }
-                }
-                reviewThreads(first: 100, after: $after) {
-                  pageInfo { hasNextPage endCursor }
-                  nodes {
-                    isResolved
-                    comments(first: 1) {
-                      nodes {
-                        author { login }
-                        body
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          }
-        `,
-        variables: {
-          owner,
-          repo,
-          after,
-          number: Number(required("PULL_REQUEST_NUMBER")),
-        },
-      }),
+      body: JSON.stringify({ query, variables }),
     },
   );
   if (!response.ok) {
     throw new Error(`GitHub GraphQL returned HTTP ${response.status}`);
   }
-  const payload = await response.json();
+  return response.json();
+}
+
+async function fetchPullRequest(after = null) {
+  if (fixture) {
+    if (fixture.errors?.length) {
+      throw new Error(`GitHub GraphQL failed: ${fixture.errors[0].message}`);
+    }
+    return fixture.data ?? fixture;
+  }
+  const [owner, repo] = required("GITHUB_REPOSITORY").split("/");
+  const payload = await graphqlRequest(
+    `
+      query($owner: String!, $repo: String!, $number: Int!, $after: String) {
+        repository(owner: $owner, name: $repo) {
+          nameWithOwner
+          pullRequest(number: $number) {
+            title
+            body
+            baseRefOid
+            headRefOid
+            reviewThreads(first: 100, after: $after) {
+              pageInfo { hasNextPage endCursor }
+              nodes {
+                isResolved
+                comments(first: 1) {
+                  nodes {
+                    author { login }
+                    body
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    `,
+    {
+      owner,
+      repo,
+      after,
+      number: Number(required("PULL_REQUEST_NUMBER")),
+    },
+  );
   if (payload.errors?.length) {
     throw new Error(
       `GitHub GraphQL failed: ${payload.errors[0].message}`,
@@ -112,6 +87,13 @@ async function fetchPullRequest(after = null) {
   }
   return payload.data;
 }
+
+// A fixture lists the Issues its repository would return, keyed `owner/repo#N`.
+const fetchIssues = fixture
+  ? async (references) => references.map((reference) => (
+    fixture.issues?.[`${reference.repository}#${reference.number}`] ?? null
+  ))
+  : graphqlIssueFetcher(graphqlRequest);
 
 const data = await fetchPullRequest();
 const pullRequest = data.repository?.pullRequest;
@@ -132,36 +114,11 @@ while (pullRequest.reviewThreads.pageInfo.hasNextPage) {
   pullRequest.reviewThreads.nodes.push(...next.reviewThreads.nodes);
   pullRequest.reviewThreads.pageInfo = next.reviewThreads.pageInfo;
 }
-const linkedIssues = pullRequest.closingIssuesReferences.nodes
-  .map((issue) => ({
-    repository: issue.repository.nameWithOwner,
-    number: issue.number,
-    title: String(issue.title).slice(0, 500),
-    body: String(issue.body).slice(0, 80_000),
-    body_truncated: String(issue.body).length > 80_000,
-    state: issue.state,
-    issue_type: issue.issueType?.name || "",
-    parent_number: issue.parent?.number ?? null,
-    sub_issue_count: issue.subIssues.totalCount,
-    sub_issue_numbers: issue.subIssues.nodes.map((item) => item.number),
-    sub_issues: issue.subIssues.nodes.map((item) => ({
-      repository: item.repository.nameWithOwner,
-      number: item.number,
-      state: item.state,
-    })),
-    blocked_by_count: issue.blockedBy.totalCount,
-    blocked_by: issue.blockedBy.nodes.map((item) => ({
-      repository: item.repository.nameWithOwner,
-      number: item.number,
-      state: item.state,
-    })),
-    blocking_count: issue.blocking.totalCount,
-    blocking: issue.blocking.nodes.map((item) => ({
-      repository: item.repository.nameWithOwner,
-      number: item.number,
-      state: item.state,
-    })),
-  }));
+const closing = await collectClosingIssues({
+  repository: data.repository.nameWithOwner,
+  body: pullRequest.body,
+  fetchIssues,
+});
 const current = analyzePullRequest({
   repository: data.repository.nameWithOwner,
   number: Number(required("PULL_REQUEST_NUMBER")),
@@ -170,8 +127,8 @@ const current = analyzePullRequest({
   body_truncated: String(pullRequest.body).length > 80_000,
   base_sha: pullRequest.baseRefOid,
   head_sha: pullRequest.headRefOid,
-  linked_issues: linkedIssues,
-  linked_issue_count: pullRequest.closingIssuesReferences.totalCount,
+  linked_issues: closing.linked_issues,
+  linked_issue_count: closing.linked_issue_count,
   unresolved_openai_thread_count: pullRequest.reviewThreads.nodes.filter(
     (thread) => (
       !thread.isResolved
@@ -185,7 +142,7 @@ const current = analyzePullRequest({
 });
 if (current.snapshot_sha256 !== required("EXPECTED_SNAPSHOT_SHA256")) {
   throw new Error(
-    "PR metadata, native Issue linkage, linked Issue design, base/head, or review threads changed while readiness review was running",
+    "PR metadata, closing-Issue linkage, linked Issue design, base/head, or review threads changed while readiness review was running",
   );
 }
 if (process.env.GITHUB_OUTPUT) {

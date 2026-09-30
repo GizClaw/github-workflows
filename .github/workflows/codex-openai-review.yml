@@ -41,7 +41,7 @@ on:
       pr-readiness-instructions:
         description: Trusted caller policy for PR metadata, Issue-plan conformance, and blocking findings.
         required: false
-        default: Require valid PR metadata, native implementation-Issue linkage, Issue-plan conformance, and no actionable findings.
+        default: Require valid PR metadata, implementation-Issue linkage, Issue-plan conformance, and no actionable findings.
         type: string
       pull_request_number:
         description: Optional pull request number for a workflow_dispatch caller.
@@ -235,7 +235,7 @@ jobs:
                 {
                   key: 'pr',
                   name: 'OpenAI PR Review',
-                  summary: 'OpenAI is validating PR title, body, and native closing-Issue linkage.',
+                  summary: 'OpenAI is validating PR title, body, and closing-Issue linkage.',
                 },
                 {
                   key: 'issue',
@@ -395,6 +395,7 @@ jobs:
             .github/scripts/issue-review
             .github/scripts/pr-readiness
             .github/scripts/pr-review
+            .github/scripts/review-request
           persist-credentials: false
 
       - name: Fetch exact pull-request objects without checking out its code
@@ -465,42 +466,6 @@ jobs:
                     pullRequest(number: $number) {
                       title
                       body
-                      closingIssuesReferences(first: 100) {
-                        totalCount
-                        nodes {
-                          repository { nameWithOwner }
-                          number
-                          title
-                          body
-                          state
-                          issueType { name }
-                          parent { number }
-                          subIssues(first: 100) {
-                            totalCount
-                            nodes {
-                              repository { nameWithOwner }
-                              number
-                              state
-                            }
-                          }
-                          blockedBy(first: 100) {
-                            totalCount
-                            nodes {
-                              repository { nameWithOwner }
-                              number
-                              state
-                            }
-                          }
-                          blocking(first: 100) {
-                            totalCount
-                            nodes {
-                              repository { nameWithOwner }
-                              number
-                              state
-                            }
-                          }
-                        }
-                      }
                       reviewThreads(first: 100) {
                         pageInfo { hasNextPage endCursor }
                         nodes {
@@ -553,6 +518,22 @@ jobs:
                 pullRequest.reviewThreads.nodes.push(...threads.nodes);
                 pullRequest.reviewThreads.pageInfo = threads.pageInfo;
               }
+              // The Issues this pull request closes are the ones its body
+              // names with a closing keyword; GitHub's Development links are
+              // not consulted.
+              const { collectClosingIssues, graphqlIssueFetcher } = await import(
+                require('node:url').pathToFileURL(require('node:path').join(
+                  process.env.REVIEWER_SOURCE_DIR,
+                  '.github/scripts/pr-readiness/closing-issues.mjs',
+                )).href
+              );
+              const closing = await collectClosingIssues({
+                repository: data.repository.nameWithOwner,
+                body: pullRequest.body,
+                fetchIssues: graphqlIssueFetcher(async (query) => (
+                  await github.request('POST /graphql', { query })
+                ).data),
+              });
               const comments = await github.paginate(github.rest.issues.listComments, {
                 owner: context.repo.owner, repo: context.repo.repo,
                 issue_number: Number(process.env.PULL_REQUEST_NUMBER), per_page: 100,
@@ -581,41 +562,8 @@ jobs:
                   body_truncated:
                     String(pullRequest.body ?? '').length > 80_000,
                 },
-                linked_issue_count:
-                  pullRequest.closingIssuesReferences.totalCount,
-                linked_issues: pullRequest.closingIssuesReferences.nodes
-                  .map((issue) => ({
-                    repository: issue.repository.nameWithOwner,
-                    number: issue.number,
-                    title: clip(issue.title, 500),
-                    body: clip(issue.body, 80_000),
-                    body_truncated:
-                      String(issue.body ?? '').length > 80_000,
-                    state: issue.state,
-                    issue_type: issue.issueType?.name || '',
-                    parent_number: issue.parent?.number ?? null,
-                    sub_issue_count: issue.subIssues.totalCount,
-                    sub_issue_numbers: issue.subIssues.nodes.map(
-                      (subIssue) => subIssue.number,
-                    ),
-                    sub_issues: issue.subIssues.nodes.map((subIssue) => ({
-                      repository: subIssue.repository.nameWithOwner,
-                      number: subIssue.number,
-                      state: subIssue.state,
-                    })),
-                    blocked_by_count: issue.blockedBy.totalCount,
-                    blocked_by: issue.blockedBy.nodes.map((dependency) => ({
-                      repository: dependency.repository.nameWithOwner,
-                      number: dependency.number,
-                      state: dependency.state,
-                    })),
-                    blocking_count: issue.blocking.totalCount,
-                    blocking: issue.blocking.nodes.map((dependency) => ({
-                      repository: dependency.repository.nameWithOwner,
-                      number: dependency.number,
-                      state: dependency.state,
-                    })),
-                  })),
+                linked_issue_count: closing.linked_issue_count,
+                linked_issues: closing.linked_issues,
                 unresolved_openai_thread_count: pullRequest.reviewThreads.nodes
                   .filter((thread) => (
                     !thread.isResolved
@@ -1242,6 +1190,7 @@ jobs:
           sparse-checkout: |
             .github/scripts/issue-review
             .github/scripts/pr-readiness
+            .github/scripts/review-request
           persist-credentials: false
 
       - name: Revalidate current PR readiness identity

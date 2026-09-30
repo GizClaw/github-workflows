@@ -296,7 +296,7 @@ const discussionScript = scripts.find(
   (body) => body.includes("comments: selectedComments.map("),
 );
 assert.ok(discussionScript, "the discussion step must select comments");
-async function collectDiscussion({ comments = [], triggerCommentId = '', pages, expectedFailure = '' }) {
+async function collectDiscussion({ comments = [], triggerCommentId = '', pages, expectedFailure = '', body = 'Body', issues }) {
   const contextFile = path.join(
     fs.mkdtempSync(path.join(os.tmpdir(), "pr-discussion-")),
     "context.json",
@@ -305,14 +305,18 @@ async function collectDiscussion({ comments = [], triggerCommentId = '', pages, 
     PR_CONTEXT_FILE: process.env.PR_CONTEXT_FILE,
     PULL_REQUEST_NUMBER: process.env.PULL_REQUEST_NUMBER,
     REQUEST_COMMENT_ID: process.env.REQUEST_COMMENT_ID,
+    REVIEWER_SOURCE_DIR: process.env.REVIEWER_SOURCE_DIR,
   };
+  // The step imports the closing-Issue collector from the reviewer checkout.
+  process.env.REVIEWER_SOURCE_DIR = path.join(
+    path.dirname(new URL(import.meta.url).pathname), "..", "..", "..",
+  );
   process.env.PR_CONTEXT_FILE = contextFile;
   process.env.PULL_REQUEST_NUMBER = "30";
   process.env.REQUEST_COMMENT_ID = triggerCommentId;
   const pullRequest = {
     title: "workflows: Test",
-    body: "Body",
-    closingIssuesReferences: { totalCount: 0, nodes: [] },
+    body,
     reviewThreads: { nodes: [], pageInfo: { hasNextPage: false } },
   };
   let pageIndex = 0;
@@ -326,6 +330,14 @@ async function collectDiscussion({ comments = [], triggerCommentId = '', pages, 
           pullRequest: { ...pullRequest, reviewThreads: structuredClone(page) } } };
       }
       return { repository: { nameWithOwner: 'GizClaw/github-workflows', pullRequest } };
+    },
+    // Closing Issues are read with one raw GraphQL request, only when the
+    // body names any.
+    request: async (route, { query }) => {
+      assert.equal(route, 'POST /graphql');
+      assert.ok(issues, 'a body without closing keywords requests no Issue');
+      assert.match(query, /^query \{ i0: repository\(owner: "GizClaw", name: "github-workflows"\) \{ issue\(number: 7\)/);
+      return { data: issues };
     },
     paginate: async () => comments,
     rest: { issues: { listComments: () => {} } },
@@ -373,6 +385,46 @@ assert.equal(laterFinding.unresolved_openai_thread_count, 1);
 await collectDiscussion({ pages: [firstThreadPage, new Error('page fetch failed')], expectedFailure: 'page fetch failed' });
 await collectDiscussion({ pages: [firstThreadPage, threadPage([], 'page1', true)], expectedFailure: 'pagination did not advance' });
 await collectDiscussion({ pages: [threadPage([], null, true)], expectedFailure: 'pagination did not advance' });
+// The linked Issues are the ones the body closes with a keyword; a plain
+// mention, a pull request number, and an API failure link nothing.
+assert.deepEqual(allResolved.linked_issues, []);
+assert.equal(allResolved.linked_issue_count, 0);
+const closingIssueNode = {
+  repository: { nameWithOwner: 'GizClaw/github-workflows' },
+  number: 7,
+  title: 'ci: Read closing Issues from the body',
+  body: 'Issue body',
+  state: 'OPEN',
+  issueType: { name: 'Feature' },
+  parent: null,
+  subIssues: { totalCount: 0, nodes: [] },
+  blockedBy: { totalCount: 0, nodes: [] },
+  blocking: { totalCount: 0, nodes: [] },
+};
+const closingDiscussion = await collectDiscussion({
+  body: 'Closes #7\n\nRelated to #8.',
+  issues: { data: { i0: { issue: closingIssueNode } } },
+});
+assert.equal(closingDiscussion.linked_issue_count, 1);
+assert.deepEqual(
+  closingDiscussion.linked_issues.map((issue) => [
+    issue.repository, issue.number, issue.issue_type, issue.state,
+  ]),
+  [['GizClaw/github-workflows', 7, 'Feature', 'OPEN']],
+);
+const notAnIssue = await collectDiscussion({
+  body: 'Closes #7',
+  issues: {
+    data: { i0: { issue: null } },
+    errors: [{ type: 'NOT_FOUND', path: ['i0', 'issue'], message: 'Could not resolve to an Issue' }],
+  },
+});
+assert.deepEqual(notAnIssue.linked_issues, []);
+await collectDiscussion({
+  body: 'Closes #7',
+  issues: { data: null, errors: [{ type: 'RATE_LIMITED', message: 'rate limit exceeded' }] },
+  expectedFailure: 'rate limit exceeded',
+});
 const comment = (id, body) => ({
   id,
   user: { login: "octocat", type: "User" },
