@@ -176,6 +176,9 @@ for (const body of [
   "    Closes #10",
   "\tCloses #10",
   "Summary.\n\n    Closes #10\n\n    Fixes #11\n",
+  "- Example\n\n      Closes #10",
+  "1. Example\n\n       Closes #10",
+  "- Outer\n  - Inner\n\n        Closes #10",
 ]) {
   assert.deepEqual(references(body), [], JSON.stringify(body));
 }
@@ -186,6 +189,8 @@ for (const body of [
   "Summary:\n    Closes #10",
   "- Linkage\n\n    Closes #10",
   "1. Linkage\n    - Closes #10",
+  "- Outer\n  - Inner\n\n    Closes #10",
+  "- Example\n\n      code\n\nCloses #10",
   "    code\n\nCloses #10",
 ]) {
   assert.deepEqual(references(body), ["GizClaw/example#10"], JSON.stringify(body));

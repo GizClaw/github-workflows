@@ -13,26 +13,50 @@ const CLOSING_REFERENCE = new RegExp(
   "gi",
 );
 const HTML_COMMENT = /<!--[\s\S]*?(?:-->|$)/g;
-const INDENTED = /^(?: {4,}| {0,3}\t)/;
-const LIST_ITEM = /^ {0,3}(?:[-*+]|\d{1,9}[.)])(?:[ \t]|$)/;
+const LIST_MARKER = /^(?:[-*+]|\d{1,9}[.)])(?=[ \t]|$)/;
 
-// An indented code block starts after a blank line and cannot interrupt a
-// paragraph. Indented lines under a list item are that item's content.
+// Width of a line's leading whitespace, with tabs advancing to four-column
+// stops as CommonMark counts them.
+function leadingWidth(line) {
+  let width = 0;
+  for (const char of line) {
+    if (char === " ") width += 1;
+    else if (char === "\t") width += 4 - (width % 4);
+    else break;
+  }
+  return width;
+}
+
+// An indented code block is four or more columns past the enclosing list
+// item's content, starts after a blank line, and cannot interrupt a paragraph.
+// Less indentation under a list item is that item's own text.
 function blankIndentedCode(text) {
+  const contentColumns = [];
   let afterBlank = true;
   let inCode = false;
-  let inList = false;
   return text.split("\n").map((line) => {
     if (line.trim() === "") {
       afterBlank = true;
       return line;
     }
-    const indented = INDENTED.test(line);
-    const code = indented && !inList && (afterBlank || inCode);
+    const indent = leadingWidth(line);
+    while (contentColumns.length > 0 && indent < contentColumns.at(-1)) {
+      contentColumns.pop();
+    }
+    const relative = indent - (contentColumns.at(-1) ?? 0);
+    const code = relative >= 4 && (afterBlank || inCode);
     afterBlank = false;
     inCode = code;
-    if (!indented) inList = LIST_ITEM.test(line);
-    return code ? "" : line;
+    if (code) return "";
+    const rest = line.trimStart();
+    const marker = relative <= 3 ? LIST_MARKER.exec(rest) : null;
+    if (marker) {
+      const padding = leadingWidth(rest.slice(marker[0].length));
+      contentColumns.push(
+        indent + marker[0].length + (padding >= 1 && padding <= 4 ? padding : 1),
+      );
+    }
+    return line;
   }).join("\n");
 }
 
