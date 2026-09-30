@@ -73,14 +73,14 @@ export function analyzePullRequest(input) {
     deterministicBlockers.push(blocker(
       "pr-linkage",
       "missing-closing-issue",
-      "Pull request must natively close at least one same-repository Issue.",
+      "Pull request body must close at least one same-repository Issue with a closing keyword, for example `Closes #123`.",
     ));
   }
   if (Number(input.linked_issue_count ?? linkedIssues.length) > linkedIssues.length) {
     deterministicBlockers.push(blocker(
       "pr-linkage",
       "too-many-closing-issues",
-      "The workflow could not review every native closing Issue within its configured bound.",
+      "The workflow could not review every closing Issue within its configured bound.",
     ));
   }
   if (Number(input.unresolved_openai_thread_count ?? 0) > 0) {
@@ -127,7 +127,7 @@ export function analyzePullRequest(input) {
         ...blocker(
           "pr-linkage",
           "missing-open-sub-issues",
-          `Pull request closes ${parent} but does not natively close its open sub-issue(s): ${missing.join(", ")}.`,
+          `Pull request closes ${parent} but does not close its open sub-issue(s): ${missing.join(", ")}.`,
         ),
         issue_repository: issue.snapshot.repository,
         issue_number: issue.snapshot.number,

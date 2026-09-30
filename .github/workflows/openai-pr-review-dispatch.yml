@@ -36,7 +36,7 @@ jobs:
         Follow the trusted-base AGENTS.md hierarchy and the Issue-review
         documents it requires.
       pr-readiness-instructions: >-
-        Require valid PR metadata, native implementation-Issue linkage,
+        Require valid PR metadata, implementation-Issue linkage,
         Issue-plan conformance, validation evidence, and no actionable findings.
       pull_request_number: ${{ inputs.pull_request_number }}
     secrets:
@@ -105,7 +105,7 @@ jobs:
         Follow the trusted-base AGENTS.md hierarchy and the Issue-review
         documents it requires.
       pr-readiness-instructions: >-
-        Require valid PR metadata, native implementation-Issue linkage,
+        Require valid PR metadata, implementation-Issue linkage,
         Issue-plan conformance, validation evidence, and no actionable findings.
       pull_request_number: ${{ matrix.pull_request_number }}
     secrets:

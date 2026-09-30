@@ -57,8 +57,10 @@ rejected in every repository.
 - Reviews an open, non-draft PR when it is opened, reopened, edited, marked
   ready, or receives a new head through `synchronize`, including a PR from an
   external fork.
-- Recalculates open PRs that natively close an Issue when that Issue is edited,
-  reopened, typed, or untyped, using the same caller and reusable PR reviewer.
+- Recalculates open PRs that GitHub lists as closing an Issue when that Issue
+  is edited, reopened, typed, or untyped, using the same caller and reusable PR
+  reviewer. A PR GitHub has not linked is refreshed by its next event or an
+  `@codex review` comment.
 - A commenter can request a fresh review of an internal or fork PR by putting
   `@codex` or `@codex review <focus>` on its own line anywhere in a PR comment,
   so a comment that explains the push and ends with the request is accepted.
@@ -82,9 +84,10 @@ rejected in every repository.
   native `OpenAI PR Review` report contains the combined conclusion. Its
   default view keeps the PR-format, Issue-design, and code/plan-conformance
   verdicts visible alongside the reviewed scope and aggregate usage.
-- `OpenAI PR Review` checks the title, body, and native closing-Issue linkage.
+- `OpenAI PR Review` checks the title, body, and closing-Issue linkage. The
+  closing Issues are the ones the PR body names with a closing keyword.
   When a closing Issue has open native sub-issues, every open child must also
-  be in the PR's native closing-Issue set. The rule applies recursively because
+  be in the PR's closing-Issue set. The rule applies recursively because
   each included child is checked in turn; already-closed children are ignored.
   `OpenAI Issue Review` checks every linked Issue independently and aggregates
   their trusted-base project-policy, repository-fit, and
@@ -185,8 +188,16 @@ linkage requirements:
   segment starts with a lowercase letter and may then contain lowercase letters,
   digits, hyphens, or underscores.
 - The PR body describes the delivered result and validation.
-- The PR has at least one same-repository native closing Issue from GraphQL
-  `closingIssuesReferences`; text-only references do not count.
+- The PR body closes at least one same-repository Issue with a closing keyword:
+  `close`, `closes`, `closed`, `fix`, `fixes`, `fixed`, `resolve`, `resolves`,
+  or `resolved` (any case, optional colon) followed on the same line by `#N`,
+  `owner/repo#N`, or an Issue URL, for example `Closes #123`. The body is the
+  only source: GitHub's Development links and `closingIssuesReferences` are not
+  consulted, so linkage does not depend on GitHub having indexed the keyword.
+  References inside code, block quotes, or HTML comments declare nothing, a
+  plain mention such as `Related to #123` does not count, and a reference that
+  is not a readable Issue (a pull request, a missing number, an inaccessible
+  repository) is ignored.
 - Issue and sub-issue snapshots must be complete.
 - When an Issue body declares `- Parent: #N` (or `owner/repo#N` for the same
   repository), GitHub's native parent must be that Issue. This is checked
@@ -202,10 +213,11 @@ The publication-time verifier also enumerates every page before comparing the
 readiness snapshot. It rejects base/head changes between pages and preserves
 the final snapshot comparison, including unresolved findings on later pages.
 
-The reviewer preserves every native closing Issue returned by GitHub's maximum
-100-node GraphQL page. It fails closed when `totalCount` exceeds the collected
-nodes, rather than silently reviewing a truncated relationship set. Native
-sub-issue snapshots use the same 100-node fail-closed bound.
+The reviewer reads every Issue the body closes, up to 100 distinct references,
+in one GraphQL request. It fails closed when the body names more, rather than
+silently reviewing a truncated relationship set, and when that request fails
+for any reason other than an unreadable reference. Native sub-issue snapshots
+use a 100-node fail-closed bound.
 Each linked Issue also preserves its native `blockedBy` and `blocking`
 relationships, including repository, Issue number, and state. Both dependency
 directions use the same deterministic normalization and 100-node fail-closed
@@ -218,7 +230,7 @@ in trusted default-branch `AGENTS.md` instructions or documents they require,
 never in untrusted PR code.
 
 Readiness evidence records the reusable-workflow source for audit and binds the
-base/head revision, normalized PR metadata, native Issue snapshots, trusted
+base/head revision, normalized PR metadata, closing-Issue snapshots, trusted
 policy, model, and effort. Final readiness is always regenerated for the
 current head. Within that run, only the affected content-addressed PR, Issue,
 or code stage is invalidated. A reusable-workflow source change alone does not
@@ -244,7 +256,8 @@ on:
 ```
 
 The caller passes `OPENAI_API_KEY` explicitly and uses per-PR concurrency. Do
-not use `secrets: inherit`. Issue events resolve native closing PRs and invoke
+not use `secrets: inherit`. Issue events resolve the PRs GitHub lists as closing
+the Issue and invoke
 the same reusable PR reviewer; there is no separate Issue-review dispatcher or
 second workflow.
 
@@ -291,8 +304,8 @@ invalidates incompatible session evidence and safely starts the affected
 review stages again. A workflow-source change remains auditable but preserves
 compatible cached evidence.
 
-When editing PR metadata, preserve the native closing-Issue relationship.
-Removing or changing that relationship changes the plan-conformance identity
+When editing PR metadata, preserve the closing keywords in the body.
+Removing or changing a closing reference changes the plan-conformance identity
 and intentionally invalidates the affected Code evidence.
 
 1. Copy `openai-pr-review-dispatch.yml` into the caller repository's default
@@ -302,7 +315,7 @@ and intentionally invalidates the affected Code evidence.
 3. Configure trusted repository-specific review instructions.
 4. Store `OPENAI_API_KEY` in an allowlisted organization or repository secret
    and forward it explicitly.
-5. Open a test PR that natively closes an implementation-ready Issue and
+5. Open a test PR whose body closes an implementation-ready Issue and
    confirm all three fixed OpenAI Checks are attached to the exact head.
 6. Push a new commit and confirm code is reviewed incrementally while unchanged
    PR and Issue evidence is reused with zero model tokens.

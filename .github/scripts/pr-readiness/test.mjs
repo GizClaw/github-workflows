@@ -5,6 +5,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import {
+  CLOSING_ISSUE_LIMIT,
+  closingIssueReferences,
+  collectClosingIssues,
+  graphqlIssueFetcher,
+} from "./closing-issues.mjs";
 import { analyzePullRequest, evaluateReadiness } from "./common.mjs";
 
 const issueBody = [
@@ -34,7 +40,7 @@ const input = {
   repository: "GizClaw/example",
   number: 11,
   title: "ci: Add readiness gate",
-  body: "Implements the plan.\n\nValidation: node test.mjs",
+  body: "Closes #10\n\nImplements the plan.\n\nValidation: node test.mjs",
   base_sha: "a".repeat(40),
   head_sha: "b".repeat(40),
   linked_issues: [{
@@ -83,6 +89,11 @@ const manyLinkedIssues = [{
 }, ...closingChildren];
 const manyLinkedIssuesInput = {
   ...input,
+  body: [
+    ...manyLinkedIssues.map((issue) => `Closes #${issue.number}`),
+    "",
+    "Implements the plan.",
+  ].join("\n"),
   linked_issues: manyLinkedIssues,
   linked_issue_count: manyLinkedIssues.length,
 };
@@ -95,13 +106,201 @@ const workflowSource = fs.readFileSync(
   path.join(scriptDirectory, "..", "..", "workflows", "codex-openai-review.yml"),
   "utf8",
 );
+const closingIssuesSource = fs.readFileSync(
+  path.join(scriptDirectory, "closing-issues.mjs"),
+  "utf8",
+);
+// Both collectors read the Issues the body closes through the shared module
+// and never GitHub's Development links.
 for (const source of [verifySource, workflowSource]) {
-  assert.match(source, /closingIssuesReferences\(first: 100\)/);
-  assert.match(source, /blockedBy\(first: 100\)/);
-  assert.match(source, /blocking\(first: 100\)/);
-  assert.match(source, /blocked_by_count:\s*issue\.blockedBy\.totalCount/);
-  assert.match(source, /blocking_count:\s*issue\.blocking\.totalCount/);
-  assert.doesNotMatch(source, /closingIssuesReferences\.nodes\s*\.slice\(/);
+  assert.match(source, /collectClosingIssues\(/);
+  assert.doesNotMatch(source, /closingIssuesReferences/);
+  assert.doesNotMatch(source, /closedByPullRequestsReferences/);
+}
+assert.match(closingIssuesSource, /subIssues\(first: 100\)/);
+assert.match(closingIssuesSource, /blockedBy\(first: 100\)/);
+assert.match(closingIssuesSource, /blocking\(first: 100\)/);
+assert.match(
+  closingIssuesSource,
+  /blocked_by_count:\s*issue\.blockedBy\.totalCount/,
+);
+assert.match(
+  closingIssuesSource,
+  /blocking_count:\s*issue\.blocking\.totalCount/,
+);
+// The reusable reviewer and the verifier both check out the module's
+// dependency on the request parser's quoted-text stripping.
+assert.equal(
+  workflowSource.match(
+    /\.github\/scripts\/pr-readiness\n\s+(?:\.github\/scripts\/pr-review\n\s+)?\.github\/scripts\/review-request\n/g,
+  )?.length,
+  2,
+);
+
+const references = (body) => closingIssueReferences(body, "GizClaw/example")
+  .map((item) => `${item.repository}#${item.number}`);
+assert.deepEqual(references("Closes #10"), ["GizClaw/example#10"]);
+for (const keyword of [
+  "close", "closes", "closed", "fix", "fixes", "fixed",
+  "resolve", "resolves", "resolved", "CLOSES", "Fixes:",
+]) {
+  assert.deepEqual(
+    references(`Summary.\n\n${keyword} #7.`),
+    ["GizClaw/example#7"],
+    keyword,
+  );
+}
+assert.deepEqual(
+  references([
+    "Closes #10, fixes gizclaw/EXAMPLE#10 and resolves Other/repo#3.",
+    "Closes https://github.com/Other/repo/issues/4",
+    "Closes #11",
+  ].join("\n")),
+  ["GizClaw/example#10", "Other/repo#3", "Other/repo#4", "GizClaw/example#11"],
+);
+for (const body of [
+  "",
+  "Related to #10, but this does not close it.",
+  "Part of #10. See #10.",
+  "hotfixes #10 and discloses #10",
+  "Closes 10",
+  "Closes #0",
+  "Closes #10abc",
+  "Closes\n#10",
+  "Closes https://github.com/Other/repo/pull/4",
+  "`Closes #10`",
+  "```\nCloses #10\n```",
+  "> Closes #10",
+  "<!-- Closes #10 -->",
+  "<!--\nCloses #10\n",
+]) {
+  assert.deepEqual(references(body), [], JSON.stringify(body));
+}
+
+const graphqlIssue = (issue) => ({
+  repository: { nameWithOwner: issue.repository },
+  number: issue.number,
+  title: issue.title,
+  body: issue.body,
+  state: issue.state,
+  issueType: { name: issue.issue_type },
+  parent: issue.parent_number == null
+    ? null
+    : { number: issue.parent_number },
+  subIssues: {
+    totalCount: issue.sub_issue_count ?? 0,
+    nodes: (issue.sub_issues ?? []).map((subIssue) => ({
+      repository: { nameWithOwner: subIssue.repository },
+      number: subIssue.number,
+      state: subIssue.state,
+    })),
+  },
+  blockedBy: {
+    totalCount: issue.blocked_by_count ?? 0,
+    nodes: (issue.blocked_by ?? []).map((dependency) => ({
+      repository: { nameWithOwner: dependency.repository },
+      number: dependency.number,
+      state: dependency.state,
+    })),
+  },
+  blocking: {
+    totalCount: issue.blocking_count ?? 0,
+    nodes: (issue.blocking ?? []).map((dependency) => ({
+      repository: { nameWithOwner: dependency.repository },
+      number: dependency.number,
+      state: dependency.state,
+    })),
+  },
+});
+{
+  // One aliased request reads every reference; a pull request or missing
+  // number is ignored, and any other GraphQL error fails closed.
+  const queries = [];
+  const fetchIssues = graphqlIssueFetcher(async (query) => {
+    queries.push(query);
+    return {
+      data: {
+        i0: { issue: graphqlIssue(input.linked_issues[0]) },
+        i1: { issue: null },
+        i2: null,
+        i3: { issue: graphqlIssue(input.linked_issues[0]) },
+      },
+      errors: [
+        { type: "NOT_FOUND", path: ["i1", "issue"], message: "not an Issue" },
+        { type: "NOT_FOUND", path: ["i2"], message: "no repository" },
+      ],
+    };
+  });
+  const collected = await collectClosingIssues({
+    repository: input.repository,
+    body: "Closes #10, closes #11, closes Private/repo#1\nFixes Renamed/example#10",
+    fetchIssues,
+  });
+  assert.equal(queries.length, 1);
+  assert.match(
+    queries[0],
+    /i0: repository\(owner: "GizClaw", name: "example"\) \{ issue\(number: 10\)/,
+  );
+  assert.match(
+    queries[0],
+    /i2: repository\(owner: "Private", name: "repo"\) \{ issue\(number: 1\)/,
+  );
+  assert.equal(collected.linked_issue_count, 1);
+  assert.deepEqual(
+    analyzePullRequest({ ...input, ...collected }).snapshot_sha256,
+    context.readiness.snapshot_sha256,
+  );
+  await assert.rejects(
+    collectClosingIssues({
+      repository: input.repository,
+      body: "Closes #10",
+      fetchIssues: graphqlIssueFetcher(async () => ({
+        data: { i0: null },
+        errors: [{ type: "RATE_LIMITED", message: "rate limit exceeded" }],
+      })),
+    }),
+    /GitHub GraphQL failed: rate limit exceeded/,
+  );
+  await assert.rejects(
+    collectClosingIssues({
+      repository: input.repository,
+      body: "Closes #10",
+      fetchIssues: graphqlIssueFetcher(async () => ({})),
+    }),
+    /no closing-Issue data/,
+  );
+  const none = await collectClosingIssues({
+    repository: input.repository,
+    body: "Related to #10.",
+    fetchIssues: graphqlIssueFetcher(async () => {
+      throw new Error("no request is needed without references");
+    }),
+  });
+  assert.deepEqual(none, { linked_issue_count: 0, linked_issues: [] });
+  assert.ok(blockerCodes(analyzePullRequest({ ...input, ...none }))
+    .includes("missing-closing-issue"));
+  // References past the bound are counted, not read, so the analysis reports
+  // the truncation.
+  const requested = [];
+  const bounded = await collectClosingIssues({
+    repository: input.repository,
+    body: Array.from(
+      { length: CLOSING_ISSUE_LIMIT + 1 },
+      (_, index) => `Closes #${index + 1}`,
+    ).join("\n"),
+    fetchIssues: async (items) => {
+      requested.push(...items);
+      return items.map((item) => graphqlIssue({
+        ...input.linked_issues[0],
+        number: item.number,
+      }));
+    },
+  });
+  assert.equal(requested.length, CLOSING_ISSUE_LIMIT);
+  assert.equal(bounded.linked_issues.length, CLOSING_ISSUE_LIMIT);
+  assert.equal(bounded.linked_issue_count, CLOSING_ISSUE_LIMIT + 1);
+  assert.ok(blockerCodes(analyzePullRequest({ ...input, ...bounded }))
+    .includes("too-many-closing-issues"));
 }
 assert.deepEqual(context.readiness.deterministic_blockers, []);
 assert.deepEqual(
@@ -144,7 +343,7 @@ assert.ok(analyzePullRequest({ ...input, linked_issues: [] })
   .deterministic_blockers.some((item) => item.code === "missing-closing-issue"));
 assert.ok(blockerCodes(analyzePullRequest({
   ...input,
-  body: "Related to #10, but this is not a native closing relationship.",
+  body: "Related to #10, but this does not close it.",
   linked_issues: [],
 })).includes("missing-closing-issue"));
 assert.ok(blockerCodes(analyzePullRequest({
@@ -504,40 +703,14 @@ try {
         body: input.body,
         baseRefOid: input.base_sha,
         headRefOid: input.head_sha,
-        closingIssuesReferences: {
-          totalCount: 1,
-          nodes: [{
-            repository: { nameWithOwner: input.repository },
-            number: 10,
-            title: "ci: Add readiness gate",
-            body: issueBody,
-            state: "OPEN",
-            issueType: { name: "Feature" },
-            parent: null,
-            subIssues: { totalCount: 0, nodes: [] },
-            blockedBy: {
-              totalCount: input.linked_issues[0].blocked_by_count,
-              nodes: input.linked_issues[0].blocked_by.map((dependency) => ({
-                repository: { nameWithOwner: dependency.repository },
-                number: dependency.number,
-                state: dependency.state,
-              })),
-            },
-            blocking: {
-              totalCount: input.linked_issues[0].blocking_count,
-              nodes: input.linked_issues[0].blocking.map((dependency) => ({
-                repository: { nameWithOwner: dependency.repository },
-                number: dependency.number,
-                state: dependency.state,
-              })),
-            },
-          }],
-        },
         reviewThreads: {
           pageInfo: { hasNextPage: false },
           nodes: [],
         },
       },
+    },
+    issues: {
+      [`${input.repository}#10`]: graphqlIssue(input.linked_issues[0]),
     },
   };
   fs.writeFileSync(fixtureFile, JSON.stringify(fixture));
@@ -574,6 +747,13 @@ try {
       let call = 0;
       globalThis.fetch = async (_url, options) => {
         const request = JSON.parse(options.body);
+        // The closing Issues are read once, after every thread page.
+        if (/^query \\{ i0: repository/.test(request.query)) {
+          assert.ok(call >= 2);
+          return { ok: true, status: 200, json: async () => ({
+            data: { i0: { issue: ${JSON.stringify(fixture.issues[`${input.repository}#10`])} } },
+          }) };
+        }
         assert.match(request.query, /after: \\$after/);
         assert.equal(request.variables.after, call === 0 ? null : 'first');
         const first = call++ === 0;
@@ -609,44 +789,11 @@ try {
   );
 
   const manyFixture = structuredClone(fixture);
-  manyFixture.repository.pullRequest.closingIssuesReferences = {
-    totalCount: manyLinkedIssues.length,
-    nodes: manyLinkedIssues.map((issue) => ({
-      repository: { nameWithOwner: issue.repository },
-      number: issue.number,
-      title: issue.title,
-      body: issue.body,
-      state: issue.state,
-      issueType: { name: issue.issue_type },
-      parent: issue.parent_number == null
-        ? null
-        : { number: issue.parent_number },
-      subIssues: {
-        totalCount: issue.sub_issue_count ?? 0,
-        nodes: (issue.sub_issues ?? []).map((subIssue) => ({
-          repository: { nameWithOwner: subIssue.repository },
-          number: subIssue.number,
-          state: subIssue.state,
-        })),
-      },
-      blockedBy: {
-        totalCount: issue.blocked_by_count ?? 0,
-        nodes: (issue.blocked_by ?? []).map((dependency) => ({
-          repository: { nameWithOwner: dependency.repository },
-          number: dependency.number,
-          state: dependency.state,
-        })),
-      },
-      blocking: {
-        totalCount: issue.blocking_count ?? 0,
-        nodes: (issue.blocking ?? []).map((dependency) => ({
-          repository: { nameWithOwner: dependency.repository },
-          number: dependency.number,
-          state: dependency.state,
-        })),
-      },
-    })),
-  };
+  manyFixture.repository.pullRequest.body = manyLinkedIssuesInput.body;
+  manyFixture.issues = Object.fromEntries(manyLinkedIssues.map((issue) => [
+    `${issue.repository}#${issue.number}`,
+    graphqlIssue(issue),
+  ]));
   fs.writeFileSync(fixtureFile, JSON.stringify(manyFixture));
   const manyReadiness = analyzePullRequest(manyLinkedIssuesInput);
   const manyResult = verify(manyReadiness.snapshot_sha256);
@@ -655,7 +802,10 @@ try {
 
   const assertStale = (mutate) => {
     const staleFixture = structuredClone(fixture);
-    mutate(staleFixture.repository.pullRequest);
+    mutate(
+      staleFixture.repository.pullRequest,
+      staleFixture.issues[`${input.repository}#10`],
+    );
     fs.writeFileSync(fixtureFile, JSON.stringify(staleFixture));
     const result = verify(context.readiness.snapshot_sha256);
     assert.notEqual(result.status, 0);
@@ -673,11 +823,18 @@ try {
   assertStale((pullRequest) => {
     pullRequest.headRefOid = "c".repeat(40);
   });
+  // Dropping the closing keyword or naming another Issue changes the linkage.
   assertStale((pullRequest) => {
-    pullRequest.closingIssuesReferences.nodes[0].body = `${issueBody}\nchanged`;
+    pullRequest.body = input.body.replace("Closes #10", "Related to #10");
   });
   assertStale((pullRequest) => {
-    pullRequest.closingIssuesReferences.nodes[0].subIssues = {
+    pullRequest.body = input.body.replace("Closes #10", "Closes #12");
+  });
+  assertStale((_pullRequest, issue) => {
+    issue.body = `${issueBody}\nchanged`;
+  });
+  assertStale((_pullRequest, issue) => {
+    issue.subIssues = {
       totalCount: 1,
       nodes: [{
         repository: { nameWithOwner: input.repository },
@@ -686,12 +843,11 @@ try {
       }],
     };
   });
-  assertStale((pullRequest) => {
-    pullRequest.closingIssuesReferences.nodes[0].blockedBy.nodes[0].state =
-      "CLOSED";
+  assertStale((_pullRequest, issue) => {
+    issue.blockedBy.nodes[0].state = "CLOSED";
   });
-  assertStale((pullRequest) => {
-    pullRequest.closingIssuesReferences.nodes[0].blocking.totalCount += 1;
+  assertStale((_pullRequest, issue) => {
+    issue.blocking.totalCount += 1;
   });
   assertStale((pullRequest) => {
     pullRequest.reviewThreads.nodes.push({
