@@ -173,8 +173,22 @@ for (const body of [
   "> Closes #10",
   "<!-- Closes #10 -->",
   "<!--\nCloses #10\n",
+  "    Closes #10",
+  "\tCloses #10",
+  "Summary.\n\n    Closes #10\n\n    Fixes #11\n",
 ]) {
   assert.deepEqual(references(body), [], JSON.stringify(body));
+}
+// Indentation alone is not code: up to three spaces, a paragraph's
+// continuation line, and a list item's content still declare the Issue.
+for (const body of [
+  "   Closes #10",
+  "Summary:\n    Closes #10",
+  "- Linkage\n\n    Closes #10",
+  "1. Linkage\n    - Closes #10",
+  "    code\n\nCloses #10",
+]) {
+  assert.deepEqual(references(body), ["GizClaw/example#10"], JSON.stringify(body));
 }
 
 const graphqlIssue = (issue) => ({

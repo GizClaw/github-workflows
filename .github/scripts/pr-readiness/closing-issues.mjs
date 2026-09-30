@@ -13,6 +13,28 @@ const CLOSING_REFERENCE = new RegExp(
   "gi",
 );
 const HTML_COMMENT = /<!--[\s\S]*?(?:-->|$)/g;
+const INDENTED = /^(?: {4,}| {0,3}\t)/;
+const LIST_ITEM = /^ {0,3}(?:[-*+]|\d{1,9}[.)])(?:[ \t]|$)/;
+
+// An indented code block starts after a blank line and cannot interrupt a
+// paragraph. Indented lines under a list item are that item's content.
+function blankIndentedCode(text) {
+  let afterBlank = true;
+  let inCode = false;
+  let inList = false;
+  return text.split("\n").map((line) => {
+    if (line.trim() === "") {
+      afterBlank = true;
+      return line;
+    }
+    const indented = INDENTED.test(line);
+    const code = indented && !inList && (afterBlank || inCode);
+    afterBlank = false;
+    inCode = code;
+    if (!indented) inList = LIST_ITEM.test(line);
+    return code ? "" : line;
+  }).join("\n");
+}
 
 const ISSUE_FIELDS = `
   repository { nameWithOwner }
@@ -56,11 +78,11 @@ function referenceKey(repository, number) {
 // without duplicates. Quoted text, code, and HTML comments declare nothing,
 // so a template placeholder or a pasted log cannot satisfy the linkage rule.
 export function closingIssueReferences(body, repository) {
-  const text = stripQuotedText(
+  const text = blankIndentedCode(stripQuotedText(
     String(body ?? "").replace(HTML_COMMENT, (chunk) => (
       chunk.replace(/[^\n]/g, " ")
     )),
-  );
+  ));
   const references = [];
   const seen = new Set();
   for (const match of text.matchAll(CLOSING_REFERENCE)) {

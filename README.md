@@ -194,9 +194,9 @@ linkage requirements:
   `owner/repo#N`, or an Issue URL, for example `Closes #123`. The body is the
   only source: GitHub's Development links and `closingIssuesReferences` are not
   consulted, so linkage does not depend on GitHub having indexed the keyword.
-  References inside code, block quotes, or HTML comments declare nothing, a
-  plain mention such as `Related to #123` does not count, and a reference that
-  is not a readable Issue (a pull request, a missing number, an inaccessible
+  References inside fenced, inline, or indented code, block quotes, or HTML
+  comments declare nothing, a plain mention such as `Related to #123` does not
+  count, and a reference that is not a readable Issue (a pull request, a missing number, an inaccessible
   repository) is ignored.
 - Issue and sub-issue snapshots must be complete.
 - When an Issue body declares `- Parent: #N` (or `owner/repo#N` for the same
