@@ -196,8 +196,8 @@ linkage requirements:
   consulted, so linkage does not depend on GitHub having indexed the keyword.
   References inside fenced, inline, or indented code, block quotes, or HTML
   comments declare nothing, a plain mention such as `Related to #123` does not
-  count, and a reference that is not a readable Issue (a pull request, a missing number, an inaccessible
-  repository) is ignored.
+  count, and a reference that is not a readable Issue (a pull request, a
+  missing number, an inaccessible repository) is ignored.
 - Issue and sub-issue snapshots must be complete.
 - When an Issue body declares `- Parent: #N` (or `owner/repo#N` for the same
   repository), GitHub's native parent must be that Issue. This is checked
