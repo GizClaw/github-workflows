@@ -179,6 +179,7 @@ for (const body of [
   "- Example\n\n      Closes #10",
   "1. Example\n\n       Closes #10",
   "- Outer\n  - Inner\n\n        Closes #10",
+  "-\tExample\n\n        Closes #10",
 ]) {
   assert.deepEqual(references(body), [], JSON.stringify(body));
 }
@@ -190,6 +191,7 @@ for (const body of [
   "- Linkage\n\n    Closes #10",
   "1. Linkage\n    - Closes #10",
   "- Outer\n  - Inner\n\n    Closes #10",
+  "-\tExample\n\n    Closes #10",
   "- Example\n\n      code\n\nCloses #10",
   "    code\n\nCloses #10",
 ]) {

@@ -15,16 +15,16 @@ const CLOSING_REFERENCE = new RegExp(
 const HTML_COMMENT = /<!--[\s\S]*?(?:-->|$)/g;
 const LIST_MARKER = /^(?:[-*+]|\d{1,9}[.)])(?=[ \t]|$)/;
 
-// Width of a line's leading whitespace, with tabs advancing to four-column
-// stops as CommonMark counts them.
-function leadingWidth(line) {
-  let width = 0;
-  for (const char of line) {
-    if (char === " ") width += 1;
-    else if (char === "\t") width += 4 - (width % 4);
+// The column where a run of leading whitespace ends when it starts at
+// `column`, with tabs advancing to four-column stops as CommonMark counts them.
+function whitespaceEnd(text, column = 0) {
+  let end = column;
+  for (const char of text) {
+    if (char === " ") end += 1;
+    else if (char === "\t") end += 4 - (end % 4);
     else break;
   }
-  return width;
+  return end;
 }
 
 // An indented code block is four or more columns past the enclosing list
@@ -39,7 +39,7 @@ function blankIndentedCode(text) {
       afterBlank = true;
       return line;
     }
-    const indent = leadingWidth(line);
+    const indent = whitespaceEnd(line);
     while (contentColumns.length > 0 && indent < contentColumns.at(-1)) {
       contentColumns.pop();
     }
@@ -51,9 +51,11 @@ function blankIndentedCode(text) {
     const rest = line.trimStart();
     const marker = relative <= 3 ? LIST_MARKER.exec(rest) : null;
     if (marker) {
-      const padding = leadingWidth(rest.slice(marker[0].length));
+      const markerEnd = indent + marker[0].length;
+      const padding = whitespaceEnd(rest.slice(marker[0].length), markerEnd)
+        - markerEnd;
       contentColumns.push(
-        indent + marker[0].length + (padding >= 1 && padding <= 4 ? padding : 1),
+        markerEnd + (padding >= 1 && padding <= 4 ? padding : 1),
       );
     }
     return line;
