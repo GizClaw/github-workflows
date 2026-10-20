@@ -299,6 +299,9 @@ trusted base. Keep the PR and linked-Issue metadata unchanged between runs.
    session ID is restored, the new generation is incremental, and its range is
    exactly `first_completed_head..second_head`. PR and Issue evidence should be
    reused while the new code work uses `codex exec resume`.
+   Compare the primary rollout's native-review entry count between Artifacts:
+   it must not increase. The second generation's chunks must have no native
+   review marker, and reused PR/Issue rows must report zero model tokens.
 
 Record both head IDs, run URLs, session ID, generation ranges, and the three
 fixed Check results in the validation PR. Keep the model, effort, CLI version,
