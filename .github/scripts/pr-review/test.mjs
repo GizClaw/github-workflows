@@ -148,8 +148,8 @@ const workflowSource = fs.readFileSync(
 // Deprecated caller inputs must not override the policy that is used for
 // execution, session restore, readiness evidence, or review publication.
 assert.doesNotMatch(workflowSource, /\$\{\{ inputs\.(?:model|effort|max-diff-bytes) \}\}/);
-assert.match(workflowSource, /^  review:\n(?:(?!^  \S)[\s\S])*?^      REVIEW_MODEL: gpt-6-sol$/m);
-assert.match(workflowSource, /^  review:\n(?:(?!^  \S)[\s\S])*?^      REVIEW_EFFORT: low$/m);
+assert.match(workflowSource, /^  review:\n(?:(?!^  \S)[\s\S])*?^      REVIEW_MODEL: gpt-6\.1-sol$/m);
+assert.match(workflowSource, /^  review:\n(?:(?!^  \S)[\s\S])*?^      REVIEW_EFFORT: max$/m);
 assert.match(workflowSource, /^  review:\n(?:(?!^  \S)[\s\S])*?^      REVIEW_MAX_DIFF_BYTES: '100000000'$/m);
 assert.match(workflowSource, /^  review:\n(?:(?!^  \S)[\s\S])*?^      REVIEW_AUTOMATIC_MAX_DIFF_BYTES: '5000000'$/m);
 assert.match(workflowSource, /AUTOMATIC_MAX_DIFF_BYTES: \$\{\{ env\.REVIEW_AUTOMATIC_MAX_DIFF_BYTES \}\}/);
@@ -157,8 +157,8 @@ assert.match(workflowSource, /LARGE_DIFF_APPROVED: \$\{\{ needs\.resolve\.output
 assert.match(workflowSource, /PRIVATE_REPOSITORY: \$\{\{ needs\.resolve\.outputs\.private_repository \}\}/);
 assert.match(workflowSource, /private_repository', String\(pr\.base\.repo\?\.private === true\)/);
 assert.match(workflowSource, /getCollaboratorPermissionLevel/);
-assert.match(workflowSource, /^  publish:\n(?:(?!^  \S)[\s\S])*?^      REVIEW_MODEL: gpt-6-sol$/m);
-assert.match(workflowSource, /^  publish:\n(?:(?!^  \S)[\s\S])*?^      REVIEW_EFFORT: low$/m);
+assert.match(workflowSource, /^  publish:\n(?:(?!^  \S)[\s\S])*?^      REVIEW_MODEL: gpt-6\.1-sol$/m);
+assert.match(workflowSource, /^  publish:\n(?:(?!^  \S)[\s\S])*?^      REVIEW_EFFORT: max$/m);
 assert.match(workflowSource, /MAX_DIFF_BYTES: \$\{\{ env\.REVIEW_MAX_DIFF_BYTES \}\}/);
 assert.equal((workflowSource.match(/MODEL: \$\{\{ env\.REVIEW_MODEL \}\}/g) ?? []).length, 5);
 assert.equal((workflowSource.match(/EFFORT: \$\{\{ env\.REVIEW_EFFORT \}\}/g) ?? []).length, 5);
