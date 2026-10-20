@@ -9,6 +9,7 @@ import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import {
   estimateCodexCredits,
+  findSession,
   numberInRanges,
   rangesFromNumbers,
   sha256,
@@ -22,6 +23,7 @@ import {
   stageIdentity,
   totalMetrics,
 } from "./stages.mjs";
+import { readNativeReview } from "./native.mjs";
 
 assert.deepEqual(rangesFromNumbers([5, 2, 3, 3, 8]), [[2, 3], [5, 5], [8, 8]]);
 assert.equal(numberInRanges(3, [[2, 3]]), true);
@@ -134,6 +136,56 @@ assert.deepEqual(
     cache_hit_ratio: 0.5,
   },
 );
+
+{
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "native-review-output-"));
+  try {
+    const repo = path.join(directory, "repo");
+    const file = path.join(directory, "sessions", "parent.jsonl");
+    fs.mkdirSync(path.dirname(file));
+    const id = "019f0000-0000-7000-8000-000000000010";
+    const output = {
+      findings: [{
+        title: "[P1] Preserve the validated input", body: "This fixture represents a native finding.",
+        priority: 1, confidence_score: 0.9,
+        code_location: { absolute_file_path: path.join(repo, "sample.mjs"), line_range: { start: 4, end: 5 } },
+      }],
+      overall_correctness: "patch is incorrect",
+      overall_explanation: "COMPLETED: One actionable finding.",
+      overall_confidence_score: 0.9,
+    };
+    const write = (value) => fs.writeFileSync(file, [
+      { type: "session_meta", payload: { id, thread_source: "user" } },
+      { type: "event_msg", payload: { type: "item_completed", turn_id: "native-turn", item: { type: "ExitedReviewMode", review_output: value } } },
+    ].map(JSON.stringify).join("\n") + "\n");
+    write(output);
+    assert.deepEqual(readNativeReview(file, repo, ["sample.mjs"]).result.findings, [{
+      title: output.findings[0].title, body: output.findings[0].body,
+      priority: "P1", path: "sample.mjs", line: 4,
+    }]);
+    assert.equal(findSession(directory, id).id, id);
+    assert.equal(findSession(directory, "019f0000-0000-7000-8000-000000000011"), null);
+    fs.writeFileSync(path.join(directory, "sessions", "child.jsonl"), JSON.stringify({
+      type: "session_meta", payload: { id: "019f0000-0000-7000-8000-000000000012", parent_thread_id: id, thread_source: "subagent" },
+    }));
+    assert.equal(findSession(directory).id, id);
+    for (const value of [null, { ...output, overall_explanation: "INCOMPLETE: Cannot read the diff." },
+      { ...output, overall_explanation: "No explicit completion." }, { ...output, overall_correctness: "" }]) {
+      write(value);
+      assert.throws(() => readNativeReview(file, repo, ["sample.mjs"]), /Native review incomplete or invalid/);
+    }
+    for (const finding of [null, { ...output.findings[0], priority: 9 }, {
+      ...output.findings[0], code_location: { absolute_file_path: "/outside/repository.mjs", line_range: { start: 1, end: 1 } },
+    }]) {
+      write({ ...output, findings: [finding] });
+      assert.throws(() => readNativeReview(file, repo, ["sample.mjs"]), /invalid code finding/);
+    }
+    write(output);
+    assert.throws(() => readNativeReview(file, repo, ["sample.mjs"], fs.statSync(file).size), /missing completed review output/);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+}
 
 const workflowSource = fs.readFileSync(
   path.join(
@@ -930,9 +982,11 @@ const fs = require("fs");
 const path = require("path");
 const args = process.argv.slice(2);
 if (process.env.FAKE_ARGS) fs.appendFileSync(process.env.FAKE_ARGS, JSON.stringify(args) + "\\n");
+const native = args[0] === "review";
+if (!native && (args[0] !== "exec" || args[1] !== "resume")) process.exit(2);
 const outputIndex = args.indexOf("--output-last-message");
-if (outputIndex < 0) process.exit(2);
-const outputFile = args[outputIndex + 1];
+if (!native && outputIndex < 0) process.exit(2);
+const outputFile = native ? "0001.json" : args[outputIndex + 1];
 const schemaIndex = args.indexOf("--output-schema");
 const schemaFile = args[schemaIndex + 1];
 const id = "019f0000-0000-7000-8000-000000000001";
@@ -969,6 +1023,18 @@ if (process.env.FAKE_PROMPT) fs.writeFileSync(process.env.FAKE_PROMPT, prompt);
 const turn = path.basename(outputFile);
 if (process.env.FAKE_PROMPTS) fs.writeFileSync(path.join(process.env.FAKE_PROMPTS, turn + ".prompt"), prompt);
 if (process.env.FAKE_TRACE) fs.appendFileSync(process.env.FAKE_TRACE, turn + "\\n");
+if (native) {
+  const output = {
+    findings: [], overall_correctness: "patch is correct",
+    overall_explanation: "COMPLETED: Fake code review complete.", overall_confidence_score: 1
+  };
+  if (process.env.FAKE_FAILURE === turn) output.overall_explanation = "INCOMPLETE: Required input could not be read";
+  if (process.env.FAKE_FAILURE === "native-malformed") output.overall_correctness = "";
+  if (process.env.FAKE_FAILURE !== "native-missing-result") fs.appendFileSync(sessionFile, JSON.stringify({
+    type: "event_msg", payload: { type: "item_completed", turn_id: "native-turn", item: { type: "ExitedReviewMode", review_output: output } }
+  }) + "\\n");
+  process.exit(0);
+}
 const result = schemaFile.endsWith("stage-output-schema.json")
     ? { summary: "Fake stage review complete.", blockers: [] }
     : {
@@ -1023,7 +1089,7 @@ fs.writeFileSync(outputFile, JSON.stringify(result));
   };
   // Exercise restored sessions against a real Git fixture. A base change must
   // start a fresh model conversation; same-base sessions remain resumable.
-  for (const binding of [null, "old-base", base]) {
+  for (const binding of [null, "old-base", base, "legacy"]) {
     const scenario = path.join(temporary, `session-base-${binding ?? "missing"}`);
     const scenarioState = path.join(scenario, "state");
     fs.mkdirSync(scenario, { recursive: true });
@@ -1038,7 +1104,8 @@ fs.writeFileSync(outputFile, JSON.stringify(result));
     } };
     fs.writeFileSync(scenarioLedgerFile, JSON.stringify(scenarioLedger));
     if (binding !== null) fs.writeFileSync(path.join(scenarioState, "session-trusted-base.json"),
-      JSON.stringify({ session_id: restoredId, base_sha: binding }));
+      JSON.stringify({ session_id: restoredId, base_sha: binding === "legacy" ? base : binding,
+        ...(binding === "legacy" ? {} : { native_review_version: 1 }) }));
     const argsFile = path.join(scenario, "args");
     const result = spawnSync(process.execPath, [
       path.join(path.dirname(new URL(import.meta.url).pathname), "run.mjs"),
@@ -1050,8 +1117,10 @@ fs.writeFileSync(outputFile, JSON.stringify(result));
     assert.equal(result.status, 0, result.stderr);
     const calls = fs.readFileSync(argsFile, "utf8").trim().split("\n").map(JSON.parse);
     assert.equal(calls[0][1] === "resume", binding === base);
-    assert.ok(calls.slice(1).every((args) => args[1] === "resume"));
+    assert.equal(calls[0][0], binding === base ? "exec" : "review");
+    assert.ok(calls.slice(1).every((args) => args[0] === "exec" && args[1] === "resume"));
     assert.equal(JSON.parse(fs.readFileSync(path.join(scenarioState, "session-trusted-base.json"))).base_sha, base);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(scenarioState, "session-trusted-base.json"))).native_review_version, 1);
     assert.equal(latestGeneration.mode, "incremental");
     if (binding !== null) {
       const aggregate = JSON.parse(fs.readFileSync(path.join(scenarioState,
@@ -1083,7 +1152,7 @@ fs.writeFileSync(outputFile, JSON.stringify(result));
   }
   // Each injected failure must fail closed, checkpoint only earlier completed
   // work, and run the failed turn again on a new same-head request.
-  for (const failure of ["stage-pr.json", "issue", "0001.json", "aggregate-result.json", "missing-status", "empty-reason", "whitespace-reason"]) {
+  for (const failure of ["stage-pr.json", "issue", "0001.json", "native-malformed", "native-missing-result", "aggregate-result.json", "missing-status", "empty-reason", "whitespace-reason"]) {
     const scenario = path.join(temporary, `recovery-${failure}`);
     const scenarioState = path.join(scenario, "state");
     const scenarioHome = path.join(scenario, "home");
@@ -1107,8 +1176,13 @@ fs.writeFileSync(outputFile, JSON.stringify(result));
       assert.doesNotMatch(failed.stderr, /No reason provided/);
     }
     const prompt = fs.readFileSync(options.env.FAKE_PROMPT, "utf8");
-    assert.match(prompt, /execution.status="incomplete"/);
-    assert.match(prompt, /attempt to read it with an available read tool/);
+    if (["0001.json", "native-malformed", "native-missing-result"].includes(failure)) {
+      assert.match(prompt, /INCOMPLETE:/);
+      assert.match(prompt, /Read this explicitly supplied read-only input/);
+    } else {
+      assert.match(prompt, /execution.status="incomplete"/);
+      assert.match(prompt, /attempt to read it with an available read tool/);
+    }
     assert.doesNotMatch(fs.readFileSync(options.env.GITHUB_OUTPUT, "utf8"), /^review=/m);
     const failedLedger = JSON.parse(fs.readFileSync(path.join(scenarioState, "review-ledger.json")));
     assert.notEqual(failedLedger.generations.at(-1).status, "completed");
@@ -1116,7 +1190,8 @@ fs.writeFileSync(outputFile, JSON.stringify(result));
     const failedTurns = fs.readFileSync(trace, "utf8").trim().split("\n");
     const failedTurn = failedTurns.at(-1);
     if (failure === "issue") assert.match(failedTurn, /^stage-issue-/);
-    else assert.equal(failedTurn, ["missing-status", "empty-reason", "whitespace-reason"].includes(failure) ? "stage-pr.json" : failure);
+    else assert.equal(failedTurn, ["missing-status", "empty-reason", "whitespace-reason"].includes(failure)
+      ? "stage-pr.json" : failure.startsWith("native-") ? "0001.json" : failure);
     fs.writeFileSync(trace, "");
     options.env.FAKE_FAILURE = "";
     options.env.RESUMED_SESSION_ID = "019f0000-0000-7000-8000-000000000001";
@@ -1240,6 +1315,9 @@ fs.writeFileSync(outputFile, JSON.stringify(result));
   ), "utf8"));
   assert.equal(aggregateInput.linked_issue_evidence[0].number, 1);
   assert.equal(aggregateInput.linked_issue_evidence[0].mode, "full");
+  assert.equal(aggregateInput.chunks[0].native_review, true);
+  assert.ok(aggregateInput.chunks[0].diff_file.endsWith("chunks/0001.diff"));
+  assert.equal(completedLedger.generations.at(-1).chunks[0].native_plan_reviewed, true);
   assert.equal(
     completedLedger.stage_evidence.issues["example/repo#1"].trusted_base_sha,
     base,
@@ -1272,9 +1350,9 @@ fs.writeFileSync(outputFile, JSON.stringify(result));
     usage.turns.map((turn) => [turn.stage, turn.mode, turn.issue_number]),
     [
       ["pr", "deterministic", null],
+      ["code", "incremental", null],
       ["pr", "full", null],
       ["issue", "full", 1],
-      ["code", "incremental", null],
       ["code", "incremental", null],
     ],
   );
@@ -1340,6 +1418,87 @@ fs.writeFileSync(outputFile, JSON.stringify(result));
       ["code", "reused"],
     ],
   );
+
+  {
+    // A completed old conversation must still initialize native review and
+    // check its first chunk's plan again before reusing the generation.
+    const scenario = path.join(temporary, "completed-legacy-session");
+    const legacyState = path.join(scenario, "state");
+    const legacyHome = path.join(scenario, "home");
+    fs.mkdirSync(scenario);
+    fs.cpSync(state, legacyState, { recursive: true });
+    fs.cpSync(codexHome, legacyHome, { recursive: true });
+    const bindingFile = path.join(legacyState, "session-trusted-base.json");
+    const binding = JSON.parse(fs.readFileSync(bindingFile));
+    delete binding.native_review_version;
+    fs.writeFileSync(bindingFile, JSON.stringify(binding));
+    const argsFile = path.join(scenario, "args");
+    const result = spawnSync(process.execPath, [new URL("./run.mjs", import.meta.url).pathname], {
+      cwd: repo, encoding: "utf8", env: {
+        ...recoveryEnv, PR_REVIEW_STATE_DIR: legacyState, CODEX_HOME: legacyHome,
+        RESUMED_SESSION_ID: binding.session_id, GENERATION_REUSED: "true",
+        GITHUB_OUTPUT: path.join(scenario, "output"), FAKE_ARGS: argsFile,
+      },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const calls = fs.readFileSync(argsFile, "utf8").trim().split("\n").map(JSON.parse);
+    assert.equal(calls[0][0], "review");
+    assert.ok(calls.slice(1).every((args) => args[0] === "exec" && args[1] === "resume"));
+    const aggregate = JSON.parse(fs.readFileSync(path.join(legacyState, "generations", latestGeneration.key, "aggregate-input.json")));
+    assert.equal(aggregate.chunks[0].native_review, true);
+    assert.ok(aggregate.chunks[0].diff_file);
+  }
+
+  {
+    // A compatible descendant push must review only the new range via resume;
+    // native initialization and its original complete diff are not repeated.
+    const scenario = path.join(temporary, "compatible-push");
+    const nextRepo = path.join(scenario, "repo");
+    const nextState = path.join(scenario, "state");
+    const nextHome = path.join(scenario, "home");
+    fs.mkdirSync(scenario);
+    assert.equal(spawnSync("git", ["clone", "-q", repo, nextRepo]).status, 0);
+    fs.cpSync(state, nextState, { recursive: true });
+    fs.cpSync(codexHome, nextHome, { recursive: true });
+    const nextGit = (...args) => {
+      const result = spawnSync("git", args, { cwd: nextRepo, encoding: "utf8" });
+      assert.equal(result.status, 0, result.stderr);
+      return result.stdout.trim();
+    };
+    nextGit("config", "user.name", "Review Test");
+    nextGit("config", "user.email", "review@example.com");
+    fs.appendFileSync(path.join(nextRepo, "large.txt"), "another incremental change\n");
+    nextGit("add", "large.txt");
+    nextGit("commit", "-qm", "next incremental push");
+    const pushedHead = nextGit("rev-parse", "HEAD");
+    const scenarioEnv = {
+      ...recoveryEnv, REPOSITORY_DIR: nextRepo, PR_REVIEW_STATE_DIR: nextState,
+      CODEX_HOME: nextHome, GITHUB_OUTPUT: path.join(scenario, "output"),
+      RESUMED_SESSION_ID: "019f0000-0000-7000-8000-000000000001",
+      PR_BASE_SHA: base, PR_HEAD_SHA: pushedHead, SESSION_KEY: "repo:1:pr:2:v2",
+      MAX_DIFF_BYTES: "1000000", AUTOMATIC_MAX_DIFF_BYTES: "1000000",
+      LARGE_DIFF_APPROVED: "false", PRIVATE_REPOSITORY: "false", CHUNK_TARGET_BYTES: "600",
+      READINESS_CONTEXT_SHA256: "context-v1", FAKE_ARGS: path.join(scenario, "args"),
+    };
+    const prepare = spawnSync(process.execPath, [new URL("./prepare.mjs", import.meta.url).pathname], {
+      cwd: nextRepo, encoding: "utf8", env: scenarioEnv,
+    });
+    assert.equal(prepare.status, 0, prepare.stderr);
+    const prepared = JSON.parse(fs.readFileSync(path.join(nextState, "review-ledger.json"))).generations.at(-1);
+    assert.equal(prepared.mode, "incremental");
+    assert.equal(prepared.from_sha, nextHead);
+    assert.equal(prepared.to_sha, pushedHead);
+    scenarioEnv.GENERATION_KEY = prepared.key;
+    const reviewed = spawnSync(process.execPath, [new URL("./run.mjs", import.meta.url).pathname], {
+      cwd: nextRepo, encoding: "utf8", env: scenarioEnv,
+    });
+    assert.equal(reviewed.status, 0, reviewed.stderr);
+    const calls = fs.readFileSync(scenarioEnv.FAKE_ARGS, "utf8").trim().split("\n").map(JSON.parse);
+    assert.equal(calls.length, prepared.chunks.length + 1);
+    assert.ok(calls.every((args) => args[0] === "exec" && args[1] === "resume"));
+    const aggregate = JSON.parse(fs.readFileSync(path.join(nextState, "generations", prepared.key, "aggregate-input.json")));
+    assert.ok(aggregate.chunks.every((chunk) => !chunk.native_review && !chunk.diff_file));
+  }
 
   // Reproduce a stale full-review blocker: the previous result claims the
   // Issue has no native parent although parent_number was already set and
@@ -1478,6 +1637,7 @@ fs.writeFileSync(outputFile, JSON.stringify(result));
     "incremental",
   );
   assert.equal(changedAggregateInput.generation.mode, "incremental");
+  assert.ok(changedAggregateInput.chunks.every((chunk) => !chunk.native_review && !chunk.diff_file));
   assert.ok(changedAggregateInput.previous_code_review);
   assert.deepEqual(
     issueChangedUsage.turns.map((turn) => [turn.stage, turn.mode]),

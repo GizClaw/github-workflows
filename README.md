@@ -129,6 +129,17 @@ rejected in every repository.
   older artifact without that binding) starts a fresh conversation while keeping
   the deterministic review ledger. Each model turn receives the current base
   explicitly, and the runner checks that its Git object is available first.
+- A new conversation starts with native `codex review`, scoped to the first
+  prepared code diff chunk. Its validated findings become that chunk's
+  checkpoint. PR and Issue checks, remaining chunks, and aggregation continue
+  with `codex exec resume` on the primary session. Aggregation checks the native
+  chunk against the reviewed Issue plans before the final verdict. Older
+  conversations without the native-review version binding start this sequence
+  once; compatible sessions keep their incremental evidence and checkpoints.
+  The native review's child-thread tokens are counted separately, while the
+  primary rollout carries the findings needed after Artifact restore.
+  Diff chunks define the changes under review; the reviewer can read related
+  complete files and code context from the trusted checkout when needed.
 - Each PR has one logical Codex session. Its 30-day Artifact v2 snapshot stores
   the validated Codex rollout plus a generation ledger containing the
   last fully reviewed head, any in-progress target, the canonical file listing,
@@ -147,7 +158,10 @@ rejected in every repository.
   reviewed sequentially in the same session. The final review is published
   only after every chunk and aggregation turn completes.
 - Every model turn reports an execution status separately from findings and
-  policy blockers. Required input paths are checked for readability before the
+  policy blockers. Native review requires a structured completion event and an
+  explicit `COMPLETED:` explanation; `INCOMPLETE:` or malformed output fails
+  closed. Resumed turns use the existing `execution.status` JSON field.
+  Required input paths are checked for readability before the
   turn, and the reviewer is instructed to read these explicit inputs even when
   they live outside its working directory. An incomplete or missing execution
   status fails the run without caching that turn or publishing a final verdict;
@@ -264,6 +278,14 @@ the same reusable PR reviewer; there is no separate Issue-review dispatcher or
 second workflow.
 
 ## Rollout
+
+The native-session smoke test runs the real pinned CLI against a local
+Responses API fixture and restores only the primary rollout before resuming.
+It does not call the OpenAI API:
+
+```sh
+npm exec --yes --package=@openai/codex@0.163.0 -- node .github/scripts/pr-review/native-session-test.mjs
+```
 
 ### Live validation matrix
 

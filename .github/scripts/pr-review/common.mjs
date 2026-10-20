@@ -210,7 +210,7 @@ export function findSession(codexHome, preferredId = "") {
   }).filter((item) => (
     !item.subagent && /^[0-9a-f-]{36}$/i.test(item.id)
   )).sort((left, right) => right.mtimeMs - left.mtimeMs);
-  return candidates.find((item) => item.id === preferredId) ?? candidates[0] ?? null;
+  return (preferredId ? candidates.find((item) => item.id === preferredId) : candidates[0]) ?? null;
 }
 
 export function usageDelta(before, after) {

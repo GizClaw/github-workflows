@@ -848,9 +848,9 @@ jobs:
               ;;
           esac
 
+      # A reusable diff checkpoint may still need a fresh native conversation.
       - name: Bootstrap Codex and its protected API proxy
         id: codex_bootstrap
-        if: steps.prepare_diff.outputs.reused != 'true'
         uses: openai/codex-action@52fe01ec70a42f454c9d2ebd47598f9fd6893d56 # v1
         with:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
