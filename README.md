@@ -287,6 +287,24 @@ It does not call the OpenAI API:
 npm exec --yes --package=@openai/codex@0.163.0 -- node .github/scripts/pr-review/native-session-test.mjs
 ```
 
+### Native review and resume acceptance
+
+Use one ready PR and two descendant documentation commits against the same
+trusted base. Keep the PR and linked-Issue metadata unchanged between runs.
+
+1. Let the first head's review finish. Inspect its session Artifact: the first
+   code chunk uses native review, the primary session has a native-review
+   version binding, and every chunk plus aggregation completes for that head.
+2. Push the second commit and let its review finish. Confirm the same primary
+   session ID is restored, the new generation is incremental, and its range is
+   exactly `first_completed_head..second_head`. PR and Issue evidence should be
+   reused while the new code work uses `codex exec resume`.
+
+Record both head IDs, run URLs, session ID, generation ranges, and the three
+fixed Check results in the validation PR. Keep the model, effort, CLI version,
+and trusted base identical for this comparison, and create a new run for each
+head rather than using Actions rerun.
+
 ### Live validation matrix
 
 Use this matrix after the caller is present on the repository's default branch.
