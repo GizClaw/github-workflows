@@ -40,10 +40,6 @@ export function analyzePullRequest(input) {
       left.snapshot.repository.localeCompare(right.snapshot.repository)
       || left.snapshot.number - right.snapshot.number
     ));
-  const sameRepository = linkedIssues.filter(
-    (issue) => issue.snapshot.repository.toLowerCase()
-      === pullRequest.repository.toLowerCase(),
-  );
   const closingIssueKeys = new Set(linkedIssues.map((issue) => (
     issueKey(issue.snapshot.repository, issue.snapshot.number)
   )));
@@ -67,13 +63,6 @@ export function analyzePullRequest(input) {
       "pr-format",
       "pr-body-truncated",
       "The workflow could not snapshot the complete pull-request body and must fail closed.",
-    ));
-  }
-  if (sameRepository.length === 0) {
-    deterministicBlockers.push(blocker(
-      "pr-linkage",
-      "missing-closing-issue",
-      "Pull request body must close at least one same-repository Issue with a closing keyword, for example `Closes #123`.",
     ));
   }
   if (Number(input.linked_issue_count ?? linkedIssues.length) > linkedIssues.length) {

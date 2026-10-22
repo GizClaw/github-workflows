@@ -41,7 +41,7 @@ on:
       pr-readiness-instructions:
         description: Trusted caller policy for PR metadata, Issue-plan conformance, and blocking findings.
         required: false
-        default: Require valid PR metadata, implementation-Issue linkage, Issue-plan conformance, and no actionable findings.
+        default: Require valid PR metadata and no actionable findings. Closing Issues are optional; check Issue linkage and plan conformance when present.
         type: string
       pull_request_number:
         description: Optional pull request number for a workflow_dispatch caller.

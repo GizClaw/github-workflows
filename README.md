@@ -1,7 +1,7 @@
 # GizClaw GitHub Workflows
 
-This repository provides an Issue-led pull-request review workflow and a
-complete copyable caller.
+This repository provides a pull-request review workflow with optional Issue
+linkage and a complete copyable caller.
 
 | File | Role |
 | --- | --- |
@@ -97,7 +97,9 @@ rejected in every repository.
   nested `AGENTS.md` files, follows the Issue-review and module documents they
   require, and applies that repository-owned contract without modifying the
   Issue or inventing missing decisions. `OpenAI Code Review`
-  checks only code findings and Issue-plan conformance. Configure all three
+  checks only code findings and Issue-plan conformance. Closing Issues are
+  optional: without them, Issue review passes without a model turn and code
+  review checks the PR without requiring an Issue plan. Configure all three
   names as required checks when every stage must block merging.
 - Code review also reads the recent PR discussion: the last 20 comments, each
   clipped to 2,000 characters, with the triggering comment kept to 8,000,
@@ -193,7 +195,7 @@ Never check out or execute the pull-request head or merge ref, do not use
 `secrets: inherit`, and restrict the organization secret to the repositories
 that should be allowed to review.
 
-## Issue-led readiness contract
+## PR readiness contract
 
 The default Issue contract comes from the consuming project's trusted
 default-branch `AGENTS.md` hierarchy and the Issue-review documents it
@@ -204,7 +206,8 @@ linkage requirements:
   segment starts with a lowercase letter and may then contain lowercase letters,
   digits, hyphens, or underscores.
 - The PR body describes the delivered result and validation.
-- The PR body closes at least one same-repository Issue with a closing keyword:
+- Closing Issues are optional. When supplied, the PR body identifies them with
+  a closing keyword:
   `close`, `closes`, `closed`, `fix`, `fixes`, `fixed`, `resolve`, `resolves`,
   or `resolved` (any case, optional colon) followed on the same line by `#N`,
   `owner/repo#N`, or an Issue URL, for example `Closes #123`. The body is the
@@ -218,8 +221,9 @@ linkage requirements:
 - When an Issue body declares `- Parent: #N` (or `owner/repo#N` for the same
   repository), GitHub's native parent must be that Issue. This is checked
   deterministically, never left to the model.
-- The complete PR result follows the current Issue plan. Material deviations
-  must be reflected in the Issue or disclosed and resolved in the PR.
+- When closing Issues are supplied, the complete PR result follows their current
+  plans. Material deviations must be reflected in the Issue or disclosed and
+  resolved in the PR.
 
 Review threads are collected across all GraphQL pages before counting unresolved
 actionable findings. A failed page request or a missing or repeated continuation
@@ -317,6 +321,7 @@ stage modes below describe model work and evidence reuse inside that run.
 | Trigger | PR evidence | Issue evidence | Code evidence | Expected Check publication |
 | --- | --- | --- | --- | --- |
 | Open a ready PR | `full` | `full` for every linked Issue | `full` complete diff | All three fixed Checks |
+| Open a ready PR without closing Issues | `full` | No model turn | `full` complete diff, without Issue-plan checks | All three fixed Checks; Issue review passes |
 | Edit only the PR body | `incremental` field diff | `reused` | `reused` | All three, with only PR metadata re-reviewed |
 | Edit one linked Issue | `reused` | `incremental` for that Issue; others `reused` | `incremental` plan-conformance aggregation with no repeated complete code diff | All three, with Issue and Code verdicts revalidated |
 | Push a descendant commit | `reused` | `reused` | `incremental` from the last completed head | All three on the new head |
@@ -348,6 +353,8 @@ complete code diff. A runtime, model, or trusted-policy change intentionally
 invalidates incompatible session evidence and safely starts the affected
 review stages again. A workflow-source change remains auditable but preserves
 compatible cached evidence.
+The optional-Issue policy changes stage identities once, so cached blockers
+from the former mandatory-linkage policy are revalidated.
 
 When editing PR metadata, preserve the closing keywords in the body.
 Removing or changing a closing reference changes the plan-conformance identity
@@ -360,8 +367,10 @@ and intentionally invalidates the affected Code evidence.
 3. Configure trusted repository-specific review instructions.
 4. Store `OPENAI_API_KEY` in an allowlisted organization or repository secret
    and forward it explicitly.
-5. Open a test PR whose body closes an implementation-ready Issue and
-   confirm all three fixed OpenAI Checks are attached to the exact head.
+5. Open test PRs with and without closing Issues. For the linked case, use an
+   implementation-ready Issue. Confirm all three fixed OpenAI Checks are
+   attached to each exact head and the unlinked PR does not fail for missing
+   Issues.
 6. Push a new commit and confirm code is reviewed incrementally while unchanged
    PR and Issue evidence is reused with zero model tokens.
 7. Test invalid PR metadata, an incomplete Issue, an unexplained plan
