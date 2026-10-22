@@ -298,8 +298,7 @@ const graphqlIssue = (issue) => ({
     }),
   });
   assert.deepEqual(none, { linked_issue_count: 0, linked_issues: [] });
-  assert.ok(blockerCodes(analyzePullRequest({ ...input, ...none }))
-    .includes("missing-closing-issue"));
+  assert.deepEqual(blockerCodes(analyzePullRequest({ ...input, ...none })), []);
   // References past the bound are counted, not read, so the analysis reports
   // the truncation.
   const requested = [];
@@ -360,20 +359,19 @@ assert.ok(analyzePullRequest({
 }).deterministic_blockers.some(
   (item) => item.code === "issue-body-truncated",
 ));
-assert.ok(analyzePullRequest({ ...input, linked_issues: [] })
-  .deterministic_blockers.some((item) => item.code === "missing-closing-issue"));
-assert.ok(blockerCodes(analyzePullRequest({
+assert.deepEqual(blockerCodes(analyzePullRequest({ ...input, linked_issues: [] })), []);
+assert.deepEqual(blockerCodes(analyzePullRequest({
   ...input,
   body: "Related to #10, but this does not close it.",
   linked_issues: [],
-})).includes("missing-closing-issue"));
-assert.ok(blockerCodes(analyzePullRequest({
+})), []);
+assert.deepEqual(blockerCodes(analyzePullRequest({
   ...input,
   linked_issues: [{
     ...input.linked_issues[0],
     repository: "Other/example",
   }],
-})).includes("missing-closing-issue"));
+})), []);
 assert.deepEqual(blockerCodes(analyzePullRequest({
   ...input,
   linked_issues: [{
@@ -608,6 +606,36 @@ const cleanReview = {
   findings: [],
   readiness: { verdict: "pass", blockers: [] },
 };
+for (const body of [
+  "Makes Issue linkage optional.\n\nValidation: node test.mjs",
+  "Related to #10.\n\nValidation: node test.mjs",
+]) {
+  const issueOptionalContext = {
+    ...context,
+    readiness: analyzePullRequest({ ...input, body, linked_issues: [] }),
+  };
+  const evidence = evaluateReadiness({
+    context: issueOptionalContext,
+    review: cleanReview,
+    workflowSourceSha: "c".repeat(40),
+    model: "gpt-5.6-terra",
+    effort: "medium",
+  });
+  assert.equal(evidence.verdict, "pass");
+  assert.deepEqual(evidence.stage_verdicts, {
+    pr_review: "pass", issue_review: "pass", code_review: "pass",
+  });
+  for (const [invalid, expected] of [
+    [{ title: "Bad title" }, "invalid-title"],
+    [{ body: "" }, "missing-body"],
+    [{ body_truncated: true }, "pr-body-truncated"],
+    [{ unresolved_openai_thread_count: 1 }, "unresolved-actionable-threads"],
+  ]) {
+    assert.ok(blockerCodes(analyzePullRequest({
+      ...input, body, linked_issues: [], ...invalid,
+    })).includes(expected));
+  }
+}
 assert.equal(evaluateReadiness({
   context,
   review: cleanReview,

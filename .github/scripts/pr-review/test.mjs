@@ -21,9 +21,11 @@ import {
   issueRelationships,
   snapshotDiff,
   stageIdentity,
+  stageSha256,
   totalMetrics,
 } from "./stages.mjs";
 import { readNativeReview } from "./native.mjs";
+import { analyzePullRequest, evaluateReadiness } from "../pr-readiness/common.mjs";
 
 assert.deepEqual(rangesFromNumbers([5, 2, 3, 3, 8]), [[2, 3], [5, 5], [8, 8]]);
 assert.equal(numberInRanges(3, [[2, 3]]), true);
@@ -1418,6 +1420,85 @@ fs.writeFileSync(outputFile, JSON.stringify(result));
       ["code", "reused"],
     ],
   );
+
+  for (const resumed of [false, true]) {
+    const scenario = path.join(temporary, `optional-issues-${resumed}`);
+    const scenarioState = path.join(scenario, "state");
+    const scenarioHome = path.join(scenario, "home");
+    fs.mkdirSync(scenario);
+    fs.cpSync(state, scenarioState, { recursive: true });
+    fs.cpSync(codexHome, scenarioHome, { recursive: true });
+    const issueOptionalContext = JSON.parse(fs.readFileSync(contextFile, "utf8"));
+    issueOptionalContext.readiness = analyzePullRequest({
+      ...issueOptionalContext.readiness.snapshot,
+      body: "Makes closing Issues optional.\n\nValidation: focused tests pass.",
+      linked_issue_count: 0,
+      linked_issues: [],
+    });
+    const scenarioContextFile = path.join(scenario, "context.json");
+    fs.writeFileSync(scenarioContextFile, JSON.stringify(issueOptionalContext));
+    if (resumed) {
+      // Old policy results must be revalidated even when PR metadata and code
+      // are unchanged, so a cached missing-Issue blocker cannot survive rollout.
+      const ledgerFile = path.join(scenarioState, "review-ledger.json");
+      const oldLedger = JSON.parse(fs.readFileSync(ledgerFile));
+      const { repository, number, title, body } = issueOptionalContext.readiness.snapshot;
+      const prSnapshot = { repository, number, title, body, linked_issues: [] };
+      for (const [stage, snapshot, instructions] of [
+        ["pr", prSnapshot, recoveryEnv.PR_REVIEW_INSTRUCTIONS],
+        ["code", {
+          base_sha: latestGeneration.base_sha,
+          effective_diff_sha256: latestGeneration.effective_diff_sha256,
+          issue_plan_sha256s: [],
+        }, `${recoveryEnv.REVIEW_INSTRUCTIONS}\n${recoveryEnv.PR_REVIEW_INSTRUCTIONS}`],
+      ]) {
+        const evidence = oldLedger.stage_evidence[stage];
+        evidence.snapshot = snapshot;
+        evidence.identity = stageIdentity({
+          stage, snapshot,
+          policySha256: stageSha256({
+            stage,
+            trusted_readiness_policy_sha256: issueOptionalContext.trusted_readiness_policy_sha256,
+            review_instructions: instructions,
+          }),
+          model: recoveryEnv.MODEL, effort: recoveryEnv.EFFORT,
+        });
+        const blocker = { code: "missing-issue", title: "Missing Issue", body: "An Issue was required." };
+        if (stage === "pr") evidence.result.blockers = [blocker];
+        else evidence.result.readiness = {
+          verdict: "fail", blockers: [{ category: "plan-conformance", ...blocker }],
+        };
+      }
+      fs.writeFileSync(ledgerFile, JSON.stringify(oldLedger));
+    }
+    const outputFile = path.join(scenario, "output");
+    const result = spawnSync(process.execPath, [new URL("./run.mjs", import.meta.url).pathname], {
+      cwd: repo, encoding: "utf8", env: {
+        ...recoveryEnv, PR_REVIEW_STATE_DIR: scenarioState, CODEX_HOME: scenarioHome,
+        PR_CONTEXT_FILE: scenarioContextFile, GITHUB_OUTPUT: outputFile,
+        RESUMED_SESSION_ID: resumed ? "019f0000-0000-7000-8000-000000000001" : "",
+      },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const outputs = fs.readFileSync(outputFile, "utf8").trim().split("\n");
+    const review = JSON.parse(outputs.find((line) => line.startsWith("review=")).slice(7));
+    const usage = JSON.parse(outputs.find((line) => line.startsWith("usage_json=")).slice(11));
+    assert.ok(usage.turns.every((turn) => turn.stage !== "issue"));
+    assert.ok(usage.turns.some((turn) => turn.stage === "pr" && turn.mode !== "reused"));
+    assert.ok(usage.turns.some((turn) => turn.stage === "code" && turn.mode !== "reused"));
+    const readiness = evaluateReadiness({
+      context: issueOptionalContext, review, workflowSourceSha: "a".repeat(40),
+      model: recoveryEnv.MODEL, effort: recoveryEnv.EFFORT,
+    });
+    assert.equal(readiness.verdict, "pass");
+    assert.deepEqual(readiness.stage_verdicts, {
+      pr_review: "pass", issue_review: "pass", code_review: "pass",
+    });
+    const aggregate = JSON.parse(fs.readFileSync(path.join(
+      scenarioState, "generations", latestGeneration.key, "aggregate-input.json",
+    )));
+    assert.deepEqual(aggregate.linked_issue_evidence, []);
+  }
 
   {
     // A completed old conversation must still initialize native review and
