@@ -132,7 +132,10 @@ rejected in every repository.
   the deterministic review ledger. Each model turn receives the current base
   explicitly, and the runner checks that its Git object is available first.
 - A new conversation starts with native `codex review`, scoped to the first
-  prepared code diff chunk. Its validated findings become that chunk's
+  prepared code diff chunk. It also receives the collected PR body and discussion
+  as untrusted background. Supplied artifact bytes must match the exact object
+  hashes in the diff; author claims cannot replace missing or unverifiable data.
+  Its validated findings become that chunk's
   checkpoint. PR and Issue checks, remaining chunks, and aggregation continue
   with `codex exec resume` on the primary session. Aggregation checks the native
   chunk against the reviewed Issue plans before the final verdict. Older
