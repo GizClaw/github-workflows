@@ -1026,6 +1026,10 @@ const turn = path.basename(outputFile);
 if (process.env.FAKE_PROMPTS) fs.writeFileSync(path.join(process.env.FAKE_PROMPTS, turn + ".prompt"), prompt);
 if (process.env.FAKE_TRACE) fs.appendFileSync(process.env.FAKE_TRACE, turn + "\\n");
 if (native) {
+  const contextPath = prompt.match(/^Read the untrusted pull-request context from (.+)\\.$/m)?.[1];
+  if (!contextPath) throw new Error("Native review did not receive its PR context input");
+  const reviewContext = JSON.parse(fs.readFileSync(contextPath, "utf8"));
+  if (process.env.FAKE_NATIVE_CONTEXT) fs.writeFileSync(process.env.FAKE_NATIVE_CONTEXT, JSON.stringify(reviewContext));
   const output = {
     findings: [], overall_correctness: "patch is correct",
     overall_explanation: "COMPLETED: Fake code review complete.", overall_confidence_score: 1
@@ -1109,17 +1113,24 @@ fs.writeFileSync(outputFile, JSON.stringify(result));
       JSON.stringify({ session_id: restoredId, base_sha: binding === "legacy" ? base : binding,
         ...(binding === "legacy" ? {} : { native_review_version: 1 }) }));
     const argsFile = path.join(scenario, "args");
+    const nativeContextFile = path.join(scenario, "native-context.json");
     const result = spawnSync(process.execPath, [
       path.join(path.dirname(new URL(import.meta.url).pathname), "run.mjs"),
     ], { cwd: repo, encoding: "utf8", env: {
       ...recoveryEnv, PR_REVIEW_STATE_DIR: scenarioState,
       RESUMED_SESSION_ID: restoredId, FAKE_ARGS: argsFile,
+      FAKE_NATIVE_CONTEXT: nativeContextFile,
       GITHUB_OUTPUT: path.join(scenario, "output"),
     } });
     assert.equal(result.status, 0, result.stderr);
     const calls = fs.readFileSync(argsFile, "utf8").trim().split("\n").map(JSON.parse);
     assert.equal(calls[0][1] === "resume", binding === base);
     assert.equal(calls[0][0], binding === base ? "exec" : "review");
+    if (binding !== base) {
+      assert.deepEqual(JSON.parse(fs.readFileSync(nativeContextFile)), JSON.parse(fs.readFileSync(contextFile)));
+    } else {
+      assert.equal(fs.existsSync(nativeContextFile), false);
+    }
     assert.ok(calls.slice(1).every((args) => args[0] === "exec" && args[1] === "resume"));
     assert.equal(JSON.parse(fs.readFileSync(path.join(scenarioState, "session-trusted-base.json"))).base_sha, base);
     assert.equal(JSON.parse(fs.readFileSync(path.join(scenarioState, "session-trusted-base.json"))).native_review_version, 1);
