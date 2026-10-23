@@ -28,6 +28,11 @@ on:
         required: false
         default: 180000
         type: number
+      lfs-context-paths:
+        description: Comma-separated trusted path globs whose base and head LFS data are required for review.
+        required: false
+        default: ''
+        type: string
       review-instructions:
         description: Additional caller-owned instructions for the review.
         required: false
@@ -342,6 +347,7 @@ jobs:
       chunk_count: ${{ steps.prepare_diff.outputs.chunk_count }}
       failure_reason: >-
         ${{ steps.fetch_head.outputs.failure_reason
+          || steps.lfs_context.outputs.failure_reason
           || steps.context.outputs.failure_reason
           || steps.api_key.outputs.failure_reason
           || (steps.checkout.outcome == 'failure' && 'Could not check out the trusted pull-request base commit.')
@@ -833,8 +839,19 @@ jobs:
           LARGE_DIFF_APPROVED: ${{ needs.resolve.outputs.large_diff_approved }}
           PRIVATE_REPOSITORY: ${{ needs.resolve.outputs.private_repository }}
           CHUNK_TARGET_BYTES: ${{ inputs.chunk-target-bytes }}
+          LFS_CONTEXT_PATHS: ${{ inputs.lfs-context-paths }}
           READINESS_CONTEXT_SHA256: ${{ steps.prepare_readiness.outputs.context_sha256 }}
         run: node "$REVIEWER_SOURCE_DIR/.github/scripts/pr-review/prepare.mjs"
+
+      - name: Prepare verified Git LFS review data
+        id: lfs_context
+        if: inputs.lfs-context-paths != ''
+        env:
+          LFS_CONTEXT_PATHS: ${{ inputs.lfs-context-paths }}
+          LFS_CONTEXT_DIR: ${{ runner.temp }}/openai-pr-review-lfs
+          REVIEW_FROM_SHA: ${{ steps.prepare_diff.outputs.from_sha }}
+          FETCH_TOKEN: ${{ github.token }}
+        run: node "$REVIEWER_SOURCE_DIR/.github/scripts/pr-review/lfs.mjs"
 
       - name: Remove fetched pull-request Git objects
         run: |
@@ -869,6 +886,7 @@ jobs:
           STAGE_OUTPUT_SCHEMA: ${{ env.REVIEWER_SOURCE_DIR }}/.github/scripts/pr-review/stage-output-schema.json
           GENERATION_KEY: ${{ steps.prepare_diff.outputs.generation_key }}
           GENERATION_REUSED: ${{ steps.prepare_diff.outputs.reused }}
+          LFS_CONTEXT_FILE: ${{ steps.lfs_context.outputs.manifest }}
           RESUMED_SESSION_ID: ${{ steps.restore_session.outputs.session_id }}
           MODEL: ${{ env.REVIEW_MODEL }}
           EFFORT: ${{ env.REVIEW_EFFORT }}
