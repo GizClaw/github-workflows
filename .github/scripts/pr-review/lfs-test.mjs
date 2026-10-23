@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { includePatterns, pointer, prepareLfs } from "./lfs.mjs";
+import { includePatterns, pointer, prepareLfs, lfsContextIdentity } from "./lfs.mjs";
 
 const sha = (value) => crypto.createHash("sha256").update(value).digest("hex");
 const encoded = (value, size = Buffer.byteLength(value)) =>
@@ -47,17 +47,33 @@ function fixture({ oversized = false, symlink = false } = {}) {
     }
   };
   return { temporary, repo, workspace, directory, base, head, before, after, file, relative,
-    include: "terraform/**/terraform.tfstate", fetcher };
+    include: "terraform/**/terraform.tfstate", fetcher, bytes };
 }
 
 assert.throws(() => includePatterns("../outside"), /Invalid/);
 assert.throws(() => includePatterns("/absolute/*"), /Invalid/);
 assert.throws(() => includePatterns(":(exclude)*"), /Invalid/);
 assert.throws(() => pointer("version https://git-lfs.github.com/spec/v1\noid sha256:invalid\nsize 2\n"), /Invalid/);
+assert.equal(lfsContextIdentity(""), "");
+assert.equal(lfsContextIdentity("a/**, b/**,a/**"), lfsContextIdentity("b/**,a/**"));
+assert.notEqual(lfsContextIdentity("a/**"), lfsContextIdentity("a/**,b/**"));
 
-for (const scenario of ["complete", "hash-mismatch", "oversized", "total-bound", "symlink", "ancestor-symlink", "native-cached-fetch"]) {
+for (const scenario of ["complete", "incremental", "hash-mismatch", "oversized", "total-bound", "symlink", "ancestor-symlink", "native-cached-fetch"]) {
   const f = fixture({ oversized: scenario === "oversized", symlink: scenario === "symlink" });
   try {
+    let prior;
+    if (scenario === "incremental") {
+      prior = f.after;
+      f.from = f.head;
+      git(f.workspace, "checkout", "-q", "--detach", f.head);
+      f.after = '{"serial":3,"resources":[{"type":"next"}]}\n';
+      f.bytes.set(sha(f.after), f.after);
+      fs.writeFileSync(f.file, encoded(f.after));
+      git(f.workspace, "add", "."); git(f.workspace, "commit", "-qm", "next head");
+      f.head = git(f.workspace, "rev-parse", "HEAD");
+      git(f.repo, "fetch", "-q", f.workspace, f.head);
+      git(f.workspace, "checkout", "-q", "--detach", f.base);
+    }
     if (scenario === "total-bound") {
       git(f.workspace, "checkout", "-q", "--detach", f.head);
       for (let index = 0; index < 9; index++) {
@@ -102,6 +118,11 @@ for (const scenario of ["complete", "hash-mismatch", "oversized", "total-bound",
     assert.equal(fs.readFileSync(f.file, "utf8"), f.before);
     assert.equal(fs.readFileSync(content.head[0].file, "utf8"), f.after);
     assert.equal(content.head[0].oid, sha(f.after));
+    if (scenario === "incremental") {
+      assert.equal(content.from_sha, f.from);
+      assert.equal(fs.readFileSync(content.from[0].file, "utf8"), prior);
+      assert.notEqual(content.from[0].oid, content.head[0].oid);
+    }
     assert.equal(fs.existsSync(path.join(f.workspace, "head-only.sh")), false);
     assert.equal(git(f.workspace, "rev-parse", "HEAD"), f.base);
   } finally { fs.rmSync(f.temporary, { recursive: true, force: true }); }

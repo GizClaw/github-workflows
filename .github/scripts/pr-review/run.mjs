@@ -651,6 +651,7 @@ try {
     snapshot: {
       base_sha: generation.base_sha,
       effective_diff_sha256: generation.effective_diff_sha256,
+      ...(generation.lfs_context_sha256 ? { lfs_context_sha256: generation.lfs_context_sha256 } : {}),
       issue_plan_sha256s:
         context.readiness.snapshot.linked_issues.map((issue) => ({
           repository: issue.snapshot.repository,

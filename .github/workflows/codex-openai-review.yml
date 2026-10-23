@@ -839,6 +839,7 @@ jobs:
           LARGE_DIFF_APPROVED: ${{ needs.resolve.outputs.large_diff_approved }}
           PRIVATE_REPOSITORY: ${{ needs.resolve.outputs.private_repository }}
           CHUNK_TARGET_BYTES: ${{ inputs.chunk-target-bytes }}
+          LFS_CONTEXT_PATHS: ${{ inputs.lfs-context-paths }}
           READINESS_CONTEXT_SHA256: ${{ steps.prepare_readiness.outputs.context_sha256 }}
         run: node "$REVIEWER_SOURCE_DIR/.github/scripts/pr-review/prepare.mjs"
 
@@ -848,6 +849,7 @@ jobs:
         env:
           LFS_CONTEXT_PATHS: ${{ inputs.lfs-context-paths }}
           LFS_CONTEXT_DIR: ${{ runner.temp }}/openai-pr-review-lfs
+          REVIEW_FROM_SHA: ${{ steps.prepare_diff.outputs.from_sha }}
           FETCH_TOKEN: ${{ github.token }}
         run: node "$REVIEWER_SOURCE_DIR/.github/scripts/pr-review/lfs.mjs"
 

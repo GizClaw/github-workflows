@@ -2,6 +2,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { lfsContextIdentity } from "./lfs.mjs";
 import {
   CHUNKER_VERSION,
   LISTING_VERSION,
@@ -47,6 +48,7 @@ const baseTipSha = process.env.PR_BASE_TIP_SHA || baseSha;
 const headSha = required("PR_HEAD_SHA");
 const sessionKey = required("SESSION_KEY");
 const readinessContextSha256 = required("READINESS_CONTEXT_SHA256");
+const lfsContextSha256 = lfsContextIdentity(process.env.LFS_CONTEXT_PATHS);
 const maxDiffBytes = positiveInteger("MAX_DIFF_BYTES");
 // Leave a small read margin so the explicit size check reports the limit.
 const diffReadBufferBytes = maxDiffBytes + 64 * 1024;
@@ -117,6 +119,7 @@ if (
   && completed.merge_base_sha === mergeBase
   && completed.effective_diff_sha256 === effectiveDiffSha256
   && completed.readiness_context_sha256 === readinessContextSha256
+  && (completed.lfs_context_sha256 || "") === lfsContextSha256
 ) {
   appendOutput("generation_key", completed.key);
   appendOutput("session_key", sessionKey);
@@ -131,7 +134,8 @@ if (
 // the head, that range would present base-branch commits as pull-request
 // changes, so the review starts again from the new merge base instead.
 let completedIsAncestor = false;
-if (completed && completed.merge_base_sha === mergeBase) {
+if (completed && completed.merge_base_sha === mergeBase
+  && (completed.lfs_context_sha256 || "") === lfsContextSha256) {
   try {
     git(repo, [
       "merge-base", "--is-ancestor", completed.to_sha, headSha,
@@ -160,6 +164,7 @@ const generationIdentity = {
   to_sha: headSha,
   effective_diff_sha256: effectiveDiffSha256,
   readiness_context_sha256: readinessContextSha256,
+  lfs_context_sha256: lfsContextSha256,
   chunk_target_bytes: chunkTargetBytes,
 };
 const generationKey = sha256(JSON.stringify(generationIdentity));

@@ -1440,6 +1440,51 @@ fs.writeFileSync(outputFile, JSON.stringify(result));
     ],
   );
 
+  {
+    const scenario = path.join(temporary, "lfs-context-changes");
+    const scenarioState = path.join(scenario, "state"), scenarioHome = path.join(scenario, "home");
+    fs.mkdirSync(scenario);
+    fs.cpSync(state, scenarioState, { recursive: true });
+    fs.cpSync(codexHome, scenarioHome, { recursive: true });
+    const prepareEnv = { ...process.env, REPOSITORY_DIR: repo, PR_REVIEW_STATE_DIR: scenarioState,
+      PR_BASE_SHA: base, PR_HEAD_SHA: nextHead, SESSION_KEY: "repo:1:pr:2:v2",
+      MAX_DIFF_BYTES: "1000000", AUTOMATIC_MAX_DIFF_BYTES: "1000000",
+      LARGE_DIFF_APPROVED: "false", PRIVATE_REPOSITORY: "false", CHUNK_TARGET_BYTES: "600",
+      READINESS_CONTEXT_SHA256: "context-v1", GITHUB_OUTPUT: path.join(scenario, "prepare-output") };
+    const prepare = (include) => spawnSync(process.execPath, [
+      path.join(path.dirname(new URL(import.meta.url).pathname), "prepare.mjs"),
+    ], { cwd: repo, encoding: "utf8", env: { ...prepareEnv, LFS_CONTEXT_PATHS: include } });
+    for (const include of ["terraform/**/*.tfstate", "terraform/**/*.tfstate,other/**/*.json", ""]) {
+      const previous = JSON.parse(fs.readFileSync(path.join(scenarioState, "review-ledger.json")));
+      fs.writeFileSync(prepareEnv.GITHUB_OUTPUT, "");
+      const changed = prepare(include);
+      assert.equal(changed.status, 0, changed.stderr);
+      assert.match(fs.readFileSync(prepareEnv.GITHUB_OUTPUT, "utf8"), /^mode=full$/m);
+      const prepared = JSON.parse(fs.readFileSync(path.join(scenarioState, "review-ledger.json")));
+      const generation = prepared.generations.at(-1);
+      assert.equal(generation.from_sha, base);
+      assert.ok(generation.chunks.every((chunk) => chunk.status === "pending"));
+      const trace = path.join(scenario, "trace"), output = path.join(scenario, "review-output");
+      fs.writeFileSync(trace, "");
+      const reviewed = spawnSync(process.execPath, [
+        path.join(path.dirname(new URL(import.meta.url).pathname), "run.mjs"),
+      ], { cwd: repo, encoding: "utf8", env: { ...recoveryEnv,
+        PR_REVIEW_STATE_DIR: scenarioState, CODEX_HOME: scenarioHome,
+        RESUMED_SESSION_ID: "019f0000-0000-7000-8000-000000000001",
+        GENERATION_KEY: generation.key, GENERATION_REUSED: "false", GITHUB_OUTPUT: output,
+        LFS_CONTEXT_FILE: include ? lfsContextFile : "", FAKE_LFS_CONTEXT: include ? lfsContextFile : "",
+        FAKE_TRACE: trace } });
+      assert.equal(reviewed.status, 0, reviewed.stderr);
+      assert.match(fs.readFileSync(trace, "utf8"), /0001\.json/);
+      const after = JSON.parse(fs.readFileSync(path.join(scenarioState, "review-ledger.json")));
+      assert.notEqual(after.stage_evidence.code.identity.snapshot_sha256,
+        previous.stage_evidence.code.identity.snapshot_sha256);
+      fs.writeFileSync(prepareEnv.GITHUB_OUTPUT, "");
+      assert.equal(prepare(include ? ` ${include} ` : "").status, 0);
+      assert.match(fs.readFileSync(prepareEnv.GITHUB_OUTPUT, "utf8"), /^mode=reused$/m);
+    }
+  }
+
   for (const resumed of [false, true]) {
     const scenario = path.join(temporary, `optional-issues-${resumed}`);
     const scenarioState = path.join(scenario, "state");

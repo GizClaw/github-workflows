@@ -291,7 +291,10 @@ comma-separated repository-relative globs, for example
 `terraform/**/terraform.tfstate`. It is disabled by default. Before the offline
 review, the trusted runner fetches matching base/head objects from the caller's
 GitHub LFS endpoint, verifies their exact pointer size and SHA256, hydrates base
-files, and supplies a separate head-data manifest. It never checks out or runs
+files, and supplies separate before/after data for the actual diff range,
+including the previous reviewed head during incremental review. Changing the
+LFS path selection invalidates code evidence and starts a complete diff review.
+It never checks out or runs
 the PR head. Acquisition fails closed above 64 MiB per object, 512 MiB total,
 or 1024 distinct objects; raw payloads and credentials are not printed.
 

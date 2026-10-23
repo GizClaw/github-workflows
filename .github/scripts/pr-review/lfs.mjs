@@ -28,6 +28,12 @@ export function includePatterns(value) {
   return patterns;
 }
 
+export function lfsContextIdentity(value) {
+  if (!String(value || "").trim()) return "";
+  const patterns = [...new Set(includePatterns(value))].sort();
+  return crypto.createHash("sha256").update(JSON.stringify({ version: 1, patterns })).digest("hex");
+}
+
 export function pointer(value) {
   const match = value.match(/^version https:\/\/git-lfs.github.com\/spec\/v1\noid sha256:([0-9a-f]{64})\nsize ([0-9]+)\n?$/);
   if (!match || !Number.isSafeInteger(Number(match[2]))) throw new Error("Invalid Git LFS pointer");
@@ -123,10 +129,12 @@ function fetchObjects({ repo, directory, objects, token, server, repository }) {
 
 export function prepareLfs(options) {
   const { repo, workspace, directory, base, head } = options;
+  const from = options.from || base;
   const patterns = includePatterns(options.include);
   const baseRows = collect(repo, base, patterns), headRows = collect(repo, head, patterns);
+  const fromRows = from === base ? baseRows : from === head ? headRows : collect(repo, from, patterns);
   const objects = new Map();
-  for (const row of [...baseRows, ...headRows]) {
+  for (const row of [...baseRows, ...fromRows, ...headRows]) {
     if (row.size < 1 || row.size > MAX_OBJECT_BYTES) throw new Error("Git LFS context object exceeds 64 MiB");
     if (objects.has(row.oid) && objects.get(row.oid).size !== row.size) throw new Error("Conflicting Git LFS object sizes");
     objects.set(row.oid, row);
@@ -147,8 +155,8 @@ export function prepareLfs(options) {
   for (const row of baseRows) hydrateBase(path.resolve(workspace), row, files.get(row.oid));
   const rows = (entries) => entries.map((row) => ({ ...row, file: files.get(row.oid) }));
   const manifest = path.join(directory, "manifest.json");
-  writeJson(manifest, { version: 1, base_sha: base, head_sha: head,
-    base: rows(baseRows), head: rows(headRows) });
+  writeJson(manifest, { version: 1, base_sha: base, from_sha: from, head_sha: head,
+    base: rows(baseRows), from: rows(fromRows), head: rows(headRows) });
   return manifest;
 }
 
@@ -157,6 +165,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     const manifest = prepareLfs({ repo: process.env.PR_DIFF_REPOSITORY,
       workspace: process.env.GITHUB_WORKSPACE, directory: process.env.LFS_CONTEXT_DIR,
       base: process.env.PR_BASE_SHA, head: process.env.PR_HEAD_SHA,
+      from: process.env.REVIEW_FROM_SHA,
       include: process.env.LFS_CONTEXT_PATHS, token: process.env.FETCH_TOKEN,
       server: process.env.GITHUB_SERVER_URL, repository: process.env.GITHUB_REPOSITORY });
     appendOutput("manifest", manifest);
