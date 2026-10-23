@@ -286,6 +286,15 @@ second workflow.
 
 ## Rollout
 
+Callers that need LFS-backed review context can set `lfs-context-paths` to
+comma-separated repository-relative globs, for example
+`terraform/**/terraform.tfstate`. It is disabled by default. Before the offline
+review, the trusted runner fetches matching base/head objects from the caller's
+GitHub LFS endpoint, verifies their exact pointer size and SHA256, hydrates base
+files, and supplies a separate head-data manifest. It never checks out or runs
+the PR head. Acquisition fails closed above 64 MiB per object, 512 MiB total,
+or 1024 distinct objects; raw payloads and credentials are not printed.
+
 The native-session smoke test runs the real pinned CLI against a local
 Responses API fixture and restores only the primary rollout before resuming.
 It does not call the OpenAI API:

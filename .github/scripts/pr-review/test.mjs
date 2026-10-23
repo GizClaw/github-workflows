@@ -1026,6 +1026,10 @@ const turn = path.basename(outputFile);
 if (process.env.FAKE_PROMPTS) fs.writeFileSync(path.join(process.env.FAKE_PROMPTS, turn + ".prompt"), prompt);
 if (process.env.FAKE_TRACE) fs.appendFileSync(process.env.FAKE_TRACE, turn + "\\n");
 if (native) {
+  if (process.env.FAKE_LFS_CONTEXT) {
+    if (!prompt.includes(process.env.FAKE_LFS_CONTEXT)) throw new Error("Native review is missing its LFS manifest");
+    if (JSON.parse(fs.readFileSync(process.env.FAKE_LFS_CONTEXT)).version !== 1) throw new Error("Unreadable LFS manifest");
+  }
   const contextPath = prompt.match(/^Read the untrusted pull-request context from (.+)\\.$/m)?.[1];
   if (!contextPath) throw new Error("Native review did not receive its PR context input");
   const reviewContext = JSON.parse(fs.readFileSync(contextPath, "utf8"));
@@ -1069,7 +1073,11 @@ fs.writeFileSync(outputFile, JSON.stringify(result));
     latestGeneration.key,
     "results",
   ), { recursive: true });
+  const lfsContextFile = path.join(temporary, "lfs-context.json");
+  fs.writeFileSync(lfsContextFile, JSON.stringify({ version: 1, base_sha: base, head_sha: nextHead, base: [], head: [] }));
   const recoveryEnv = {
+    LFS_CONTEXT_FILE: lfsContextFile,
+    FAKE_LFS_CONTEXT: lfsContextFile,
     ...process.env,
     PATH: `${fakeBin}${path.delimiter}${process.env.PATH}`,
     GITHUB_OUTPUT: reviewOutput,
