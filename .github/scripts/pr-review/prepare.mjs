@@ -350,8 +350,8 @@ for (const record of deltaRecords) {
     added_line_ranges: addedLines(patchText),
     ...(/^Binary files .* differ$/m.test(patchText) ? {
       binary: {
-        before: saveBinary(fromSha, record.old_path),
-        after: saveBinary(headSha, record.path),
+        before: record.status === "A" ? null : saveBinary(fromSha, record.old_path),
+        after: record.status === "D" ? null : saveBinary(headSha, record.path),
       },
     } : {}),
   });

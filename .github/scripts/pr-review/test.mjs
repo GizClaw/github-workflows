@@ -634,7 +634,7 @@ try {
   });
   assert.equal(plainPatch.status, 0);
   assert.ok(plainPatch.stdout.length < 1000);
-  const prepareBinary = (approved, privateRepo = false, hardMax = "20000") => spawnSync(process.execPath, [
+  const prepareBinary = (approved, privateRepo = false, hardMax = "20000", extraEnv = {}) => spawnSync(process.execPath, [
     path.join(path.dirname(new URL(import.meta.url).pathname), "prepare.mjs"),
   ], {
     cwd: binaryRepo,
@@ -652,6 +652,7 @@ try {
       PRIVATE_REPOSITORY: String(privateRepo),
       CHUNK_TARGET_BYTES: "600",
       READINESS_CONTEXT_SHA256: "binary-context",
+      ...extraEnv,
     },
   });
   const blockedBinary = prepareBinary(false);
@@ -672,6 +673,33 @@ try {
   const blockedPrivateHardCap = prepareBinary(false, true, "4000");
   assert.notEqual(blockedPrivateHardCap.status, 0);
   assert.match(blockedPrivateHardCap.stderr, /configured total limit is 4000 bytes/);
+
+  for (const toDirectory of [true, false]) {
+    const replacementBase = runBinaryGit("rev-parse", "HEAD");
+    fs.rmSync(path.join(binaryRepo, "model.glb"), { recursive: true });
+    const newPath = toDirectory ? "model.glb/nested.bin" : "model.glb";
+    if (toDirectory) fs.mkdirSync(path.join(binaryRepo, "model.glb"));
+    fs.writeFileSync(path.join(binaryRepo, newPath),
+      Buffer.from(toDirectory ? [0, 5, 9] : [0, 3, 7, 6, 4, 1]));
+    runBinaryGit("add", ".");
+    runBinaryGit("commit", "-qm", "replace binary file and directory");
+    const replacementState = path.join(temporary, `binary-replacement-${toDirectory}`);
+    const prepared = prepareBinary(true, true, "100000", {
+      PR_BASE_SHA: replacementBase,
+      PR_HEAD_SHA: runBinaryGit("rev-parse", "HEAD"),
+      PR_REVIEW_STATE_DIR: replacementState,
+    });
+    assert.equal(prepared.status, 0, prepared.stderr);
+    const generation = JSON.parse(fs.readFileSync(path.join(replacementState, "review-ledger.json")))
+      .generations.at(-1);
+    const listing = JSON.parse(fs.readFileSync(path.join(replacementState, "generations", generation.key, "listing.json")));
+    const added = listing.files.find((file) => file.status === "A");
+    const removed = listing.files.find((file) => file.status === "D");
+    assert.equal(added.binary.before, null);
+    assert.equal(added.binary.after.path, newPath);
+    assert.equal(removed.binary.after, null);
+    assert.ok(removed.binary.before.oid);
+  }
 
   const repo = path.join(temporary, "repo");
   fs.mkdirSync(repo);
