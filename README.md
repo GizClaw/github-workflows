@@ -162,6 +162,15 @@ rejected in every repository.
   one model turn are split deterministically at file and hunk boundaries and
   reviewed sequentially in the same session. The final review is published
   only after every chunk and aggregation turn completes.
+- Binary files in the diff have their before/after Git blobs exported as
+  read-only evidence before the PR object database is removed. The canonical
+  listing records Git blob IDs, SHA-256, size and content-addressed paths;
+  native and resumed code-review turns receive that listing. Blob bytes are
+  verified on export and again on restore, and never become executable policy.
+  Evidence is limited to 32 MiB per blob and 128 MiB of unique blobs per
+  generation. Listing version 2 invalidates earlier checkpoints without this
+  evidence. The regression tests are `node .github/scripts/pr-review/binary-test.mjs`
+  and `node .github/scripts/pr-review/test.mjs`.
 - Every model turn reports an execution status separately from findings and
   policy blockers. Native review requires a structured completion event and an
   explicit `COMPLETED:` explanation; `INCOMPLETE:` or malformed output fails

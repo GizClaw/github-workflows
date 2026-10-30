@@ -3,6 +3,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { lfsContextIdentity } from "./lfs.mjs";
+import { binaryWriter, verifyBinaryEvidence } from "./binary.mjs";
 import {
   CHUNKER_VERSION,
   LISTING_VERSION,
@@ -121,6 +122,8 @@ if (
   && completed.readiness_context_sha256 === readinessContextSha256
   && (completed.lfs_context_sha256 || "") === lfsContextSha256
 ) {
+  verifyBinaryEvidence(path.join(generationsDir, completed.key),
+    readJson(path.join(generationsDir, completed.key, "listing.json")));
   appendOutput("generation_key", completed.key);
   appendOutput("session_key", sessionKey);
   appendOutput("from_sha", completed.from_sha);
@@ -184,6 +187,7 @@ if (
     && sha256(fs.readFileSync(path.join(generationDir, chunk.relative_path))) === chunk.sha256
   ))
 ) {
+  verifyBinaryEvidence(generationDir, readJson(listingPath));
   fs.mkdirSync(resultsDir, { recursive: true, mode: 0o700 });
   appendOutput("generation_key", generationKey);
   appendOutput("session_key", sessionKey);
@@ -234,7 +238,7 @@ function filePatch(record, from, to, tripleDot) {
   return String(git(repo, [
     ...diffArgs(from, to, tripleDot),
     "--",
-    ...paths,
+    ...paths.map((file) => `:(literal)${file}`),
   ], { maxBuffer: diffReadBufferBytes }));
 }
 
@@ -333,6 +337,7 @@ function splitPatch(record, patchText, limit) {
 }
 
 const deltaRecords = parseNameStatus(fromSha, headSha, rangeTripleDot);
+const saveBinary = binaryWriter(repo, generationDir);
 const listingFiles = [];
 const pieces = [];
 for (const record of deltaRecords) {
@@ -343,6 +348,12 @@ for (const record of deltaRecords) {
     patch_bytes: patchBuffer.length,
     patch_sha256: sha256(patchBuffer),
     added_line_ranges: addedLines(patchText),
+    ...(/^Binary files .* differ$/m.test(patchText) ? {
+      binary: {
+        before: record.status === "A" ? null : saveBinary(fromSha, record.old_path),
+        after: record.status === "D" ? null : saveBinary(headSha, record.path),
+      },
+    } : {}),
   });
   pieces.push(...splitPatch(record, patchText, chunkTargetBytes));
 }

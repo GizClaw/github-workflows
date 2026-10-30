@@ -1,0 +1,32 @@
+name: Review script tests
+
+on:
+  pull_request:
+    paths:
+      - .github/scripts/**
+      - .github/workflows/test-review-scripts.yml
+  push:
+    branches: [main]
+    paths:
+      - .github/scripts/**
+      - .github/workflows/test-review-scripts.yml
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Binary evidence, review orchestration and readiness regression tests
+        run: |
+          node .github/scripts/pr-review/binary-test.mjs
+          node .github/scripts/pr-review/test.mjs
+          node .github/scripts/pr-review/lfs-test.mjs
+          node .github/scripts/pr-readiness/test.mjs
+          node .github/scripts/issue-review/test.mjs
+          node .github/scripts/review-request/test.mjs
