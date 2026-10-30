@@ -5,7 +5,7 @@ import { spawnSync } from "node:child_process";
 
 // Version 4 requires an explicit completed execution before caching review evidence.
 export const STATE_SCHEMA_VERSION = 4;
-export const LISTING_VERSION = 1;
+export const LISTING_VERSION = 2;
 export const CHUNKER_VERSION = 1;
 export const CODEX_CREDIT_RATES = Object.freeze({
   "gpt-5.6-sol": Object.freeze({

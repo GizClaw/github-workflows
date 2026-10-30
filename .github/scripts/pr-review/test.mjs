@@ -658,6 +658,16 @@ try {
   assert.notEqual(blockedBinary.status, 0);
   assert.match(blockedBinary.stderr, /automatic reviews are limited to 4000 bytes/);
   assert.equal(prepareBinary(true).status, 0);
+  const binaryState = path.join(temporary, "binary-state");
+  const binaryGeneration = JSON.parse(fs.readFileSync(path.join(binaryState, "review-ledger.json")))
+    .generations.at(-1);
+  const binaryDirectory = path.join(binaryState, "generations", binaryGeneration.key);
+  const binaryListing = JSON.parse(fs.readFileSync(path.join(binaryDirectory, "listing.json")));
+  const savedBinary = binaryListing.files.find((file) => file.path === "model.glb").binary;
+  assert.equal(savedBinary.before, null);
+  assert.equal(savedBinary.after.oid, runBinaryGit("rev-parse", `${binaryHead}:model.glb`));
+  assert.deepEqual(fs.readFileSync(path.join(binaryDirectory, savedBinary.after.relative_path)),
+    fs.readFileSync(path.join(binaryRepo, "model.glb")));
   assert.equal(prepareBinary(false, true).status, 0);
   const blockedPrivateHardCap = prepareBinary(false, true, "4000");
   assert.notEqual(blockedPrivateHardCap.status, 0);
