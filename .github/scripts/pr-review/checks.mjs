@@ -35,6 +35,12 @@ export async function reconcileSupersededChecks({
   workflowRepository, serverUrl = "https://github.com",
 }) {
   const skipped = reason => ({ updated: [], skipped: reason });
+  let readSequence = 0;
+  // Metadata caches must not let an older successful review authorize cleanup.
+  const freshRead = () => ({
+    headers: { "cache-control": "no-cache" },
+    cache_bust: `${runId}-${runAttempt}-${Date.now()}-${readSequence++}`,
+  });
   if (!/^[0-9a-f]{40}$/.test(headSha || "")
     || ![pullNumber, runId, runAttempt].every(value => Number.isSafeInteger(value) && value > 0)) {
     throw new Error("Invalid review identity for check reconciliation");
@@ -44,7 +50,7 @@ export async function reconcileSupersededChecks({
     return skipped("The three current verdict checks are required");
   }
   const verdicts = await Promise.all(Object.entries(VERDICTS).map(async ([key, name]) => {
-    const { data } = await github.rest.checks.get({ owner, repo, check_run_id: Number(checkIds[key]) });
+    const { data } = await github.rest.checks.get({ owner, repo, ...freshRead(), check_run_id: Number(checkIds[key]) });
     return { key, name, data };
   }));
   const appId = verdicts[0].data.app?.id;
@@ -55,7 +61,7 @@ export async function reconcileSupersededChecks({
     && data.external_id === `${runId}:${runAttempt}:${pullNumber}:${key}`
   ))) return skipped("The current run has not passed all three verdict checks");
 
-  const { data: currentRun } = await github.rest.actions.getWorkflowRun({ owner, repo, run_id: runId });
+  const { data: currentRun } = await github.rest.actions.getWorkflowRun({ owner, repo, ...freshRead(), run_id: runId });
   const created = Date.parse(currentRun.created_at);
   if (currentRun.id !== runId || currentRun.run_attempt !== runAttempt
     || !Number.isSafeInteger(currentRun.workflow_id) || !currentRun.path
@@ -63,7 +69,7 @@ export async function reconcileSupersededChecks({
     throw new Error("Incomplete current workflow identity");
   }
   const checks = await github.paginate(github.rest.checks.listForRef, {
-    owner, repo, ref: headSha, filter: "latest", per_page: 100,
+    owner, repo, ...freshRead(), ref: headSha, filter: "latest", per_page: 100,
   });
   const latestVerdictsMatch = list => verdicts.every(({ name, data }) => {
     const newest = list.filter(check => check.name === name && check.app?.id === appId)
@@ -79,7 +85,7 @@ export async function reconcileSupersededChecks({
     const jobRef = nativeJob(check, owner, repo, serverUrl);
     if (!jobRef || jobRef.runId >= runId) continue;
     if (!runs.has(jobRef.runId)) {
-      const { data } = await github.rest.actions.getWorkflowRun({ owner, repo, run_id: jobRef.runId });
+      const { data } = await github.rest.actions.getWorkflowRun({ owner, repo, ...freshRead(), run_id: jobRef.runId });
       runs.set(jobRef.runId, data);
     }
     const previous = runs.get(jobRef.runId);
@@ -92,7 +98,7 @@ export async function reconcileSupersededChecks({
       || !previous.referenced_workflows?.some(workflow => workflow.path?.startsWith(
         `${workflowRepository}/.github/workflows/codex-openai-review.yml@`,
       ))) continue;
-    const { data: job } = await github.rest.actions.getJobForWorkflowRun({ owner, repo, job_id: jobRef.jobId });
+    const { data: job } = await github.rest.actions.getJobForWorkflowRun({ owner, repo, ...freshRead(), job_id: jobRef.jobId });
     if (job.run_id !== previous.id || job.name !== check.name || job.status !== "completed"
       || job.conclusion !== check.conclusion || job.check_run_url !== check.url) continue;
     candidates.push(check);
@@ -101,10 +107,10 @@ export async function reconcileSupersededChecks({
 
   // Collect and validate all evidence before writing. Do not let an older
   // finalizer supersede checks after a new head or a new review has started.
-  const { data: pull } = await github.rest.pulls.get({ owner, repo, pull_number: pullNumber });
+  const { data: pull } = await github.rest.pulls.get({ owner, repo, ...freshRead(), pull_number: pullNumber });
   if (pull.state !== "open" || pull.draft || pull.head?.sha !== headSha) return skipped("The pull request changed");
   const finalChecks = await github.paginate(github.rest.checks.listForRef, {
-    owner, repo, ref: headSha, filter: "latest", per_page: 100,
+    owner, repo, ...freshRead(), ref: headSha, filter: "latest", per_page: 100,
   });
   if (!latestVerdictsMatch(finalChecks)) return skipped("A newer review owns this head");
 

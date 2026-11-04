@@ -164,6 +164,25 @@ for (const when of [1, 2]) {
   });
 }
 
+test("fresh snapshots cannot reuse a cached success after another review starts", async () => {
+  const state = fixture();
+  const paginate = state.args.github.paginate;
+  const seen = new Set();
+  let reads = 0;
+  state.args.github.paginate = async (method, parameters) => {
+    reads += 1;
+    const fresh = parameters.headers?.["cache-control"] === "no-cache"
+      && parameters.cache_bust && !seen.has(parameters.cache_bust);
+    seen.add(parameters.cache_bust);
+    const checks = await paginate(method, parameters);
+    if (reads === 2 && fresh) checks.push({ ...checks[0], id: 400, status: "in_progress", conclusion: null });
+    return checks;
+  };
+  assert.ok((await state.run()).skipped);
+  assert.equal(seen.size, 2);
+  unchanged(state);
+});
+
 test("head moves, closed PRs and drafts are rechecked before writes", async () => {
   for (const change of [{ head: { sha: "b".repeat(40) } }, { state: "closed" }, { draft: true }]) {
     const state = fixture(); Object.assign(state.pull, change);
