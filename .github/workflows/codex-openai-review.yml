@@ -1530,11 +1530,14 @@ jobs:
     if: always() && github.run_attempt == 1 && needs.resolve.outputs.eligible == 'true'
     runs-on: ubuntu-latest
     permissions:
+      actions: read
+      contents: read
       checks: write
       issues: write
       pull-requests: write
     steps:
       - name: Record review result
+        id: result
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         env:
           PR_CHECK_RUN_ID: ${{ needs.start.outputs.pr_check_run_id }}
@@ -1664,6 +1667,11 @@ jobs:
               );
             }
 
+            core.setOutput('reconcile_checks', String(
+              !failedUpdate && overallConclusion === 'success'
+              && checkUpdates.length === 3 && checks.every((check) => check.verdict === 'pass'),
+            ));
+
             if (!executionSucceeded && !cancelled) {
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
@@ -1735,3 +1743,52 @@ jobs:
                 failure: 'rocket',
               }[overallConclusion],
             });
+
+      - name: Check out the exact check-reconciliation helper
+        id: status_source
+        if: always() && steps.result.outputs.reconcile_checks == 'true'
+        continue-on-error: true
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .openai-pr-status-workflow-source
+          sparse-checkout: .github/scripts/pr-review
+          persist-credentials: false
+
+      - name: Reconcile superseded native review checks
+        if: >-
+          always() && steps.result.outputs.reconcile_checks == 'true'
+          && steps.status_source.outcome == 'success'
+        continue-on-error: true
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          PR_CHECK_RUN_ID: ${{ needs.start.outputs.pr_check_run_id }}
+          ISSUE_CHECK_RUN_ID: ${{ needs.start.outputs.issue_check_run_id }}
+          CODE_CHECK_RUN_ID: ${{ needs.start.outputs.code_check_run_id }}
+          PR_HEAD_SHA: ${{ needs.resolve.outputs.head_sha }}
+          PULL_REQUEST_NUMBER: ${{ needs.resolve.outputs.number }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          WORKFLOW_REPOSITORY: ${{ job.workflow_repository }}
+          SERVER_URL: ${{ github.server_url }}
+        with:
+          script: |
+            const { pathToFileURL } = require('node:url');
+            const path = require('node:path');
+            const source = path.resolve('.openai-pr-status-workflow-source/.github/scripts/pr-review/checks.mjs');
+            const { reconcileSupersededChecks } = await import(pathToFileURL(source).href);
+            const result = await reconcileSupersededChecks({
+              github, ...context.repo,
+              pullNumber: Number(process.env.PULL_REQUEST_NUMBER),
+              headSha: process.env.PR_HEAD_SHA,
+              runId: context.runId,
+              runAttempt: Number(process.env.RUN_ATTEMPT),
+              workflowRepository: process.env.WORKFLOW_REPOSITORY,
+              serverUrl: process.env.SERVER_URL,
+              checkIds: {
+                pr: Number(process.env.PR_CHECK_RUN_ID),
+                issue: Number(process.env.ISSUE_CHECK_RUN_ID),
+                code: Number(process.env.CODE_CHECK_RUN_ID),
+              },
+            });
+            core.info(result.skipped || `Marked ${result.updated.length} obsolete native review check(s) as superseded.`);

@@ -5,11 +5,13 @@ on:
     paths:
       - .github/scripts/**
       - .github/workflows/test-review-scripts.yml
+      - .github/workflows/codex-openai-review.yml
   push:
     branches: [main]
     paths:
       - .github/scripts/**
       - .github/workflows/test-review-scripts.yml
+      - .github/workflows/codex-openai-review.yml
 
 permissions:
   contents: read
@@ -25,8 +27,61 @@ jobs:
       - name: Binary evidence, review orchestration and readiness regression tests
         run: |
           node .github/scripts/pr-review/binary-test.mjs
+          node .github/scripts/pr-review/checks-test.mjs
           node .github/scripts/pr-review/test.mjs
           node .github/scripts/pr-review/lfs-test.mjs
           node .github/scripts/pr-readiness/test.mjs
           node .github/scripts/issue-review/test.mjs
           node .github/scripts/review-request/test.mjs
+
+  verify-native-check-updates:
+    needs: test
+    if: >-
+      github.actor != 'dependabot[bot]' &&
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      checks: write
+    steps:
+      - name: Verify native Checks API support on this run's completed unit-test job
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          script: |
+            const { data: run } = await github.rest.actions.getWorkflowRun({
+              ...context.repo, run_id: context.runId,
+            });
+            const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, {
+              ...context.repo, run_id: context.runId, filter: 'latest', per_page: 100,
+            });
+            const matches = jobs.filter((job) => job.name === 'test'
+              && job.run_id === context.runId && job.status === 'completed' && job.conclusion === 'success');
+            if (matches.length !== 1) throw new Error('Expected exactly one successful unit-test job in this run');
+            const checkId = Number(new URL(matches[0].check_run_url).pathname.split('/').at(-1));
+            const { data: original } = await github.rest.checks.get({
+              ...context.repo, check_run_id: checkId,
+            });
+            if (original.url !== matches[0].check_run_url || original.head_sha !== run.head_sha
+              || original.name !== 'test' || original.app?.slug !== 'github-actions'
+              || original.status !== 'completed' || original.conclusion !== 'success') {
+              throw new Error('The native check does not match this successful unit-test execution');
+            }
+            // Exercise the real API only on our own successful test check, then
+            // restore its true result. No failed checks or other runs are touched.
+            try {
+              await github.rest.checks.update({
+                ...context.repo, check_run_id: checkId, status: 'completed', conclusion: 'neutral',
+                completed_at: original.completed_at,
+              });
+              const { data: changed } = await github.rest.checks.get({
+                ...context.repo, check_run_id: checkId,
+              });
+              if (changed.conclusion !== 'neutral') throw new Error('Native check conclusion was not updated');
+            } finally {
+              await github.rest.checks.update({
+                ...context.repo, check_run_id: checkId, status: 'completed', conclusion: 'success',
+                completed_at: original.completed_at,
+              });
+            }
+            core.info('Native check reconciliation is supported; the successful unit-test result was restored.');
