@@ -86,19 +86,29 @@ rejected in every repository.
   native `OpenAI PR Review` report contains the combined conclusion. Its
   default view keeps the PR-format, Issue-design, and code/plan-conformance
   verdicts visible alongside the reviewed scope and aggregate usage.
-- Successful retries also reconcile obsolete native Actions checks. A
-  `pull_request_target` run attaches its `review / …` jobs to the PR head;
-  a comment-triggered retry attaches native jobs to the default branch, so
-  GitHub otherwise leaves the original failed/cancelled jobs on the PR even
-  after all three OpenAI verdicts pass. After publication and successful Check
-  updates, the finalizer can mark those older native jobs `neutral`, with links
-  to both executions. It verifies the exact head, PR association, caller
-  workflow, reusable reviewer, Actions app and native job identity, and refuses
-  to run behind a newer review. Only the canonical caller's `review / …` jobs
-  qualify; business build checks and active runs are never changed. Original
-  Actions executions and logs remain available. Reconciliation is best effort:
-  an API or permission error leaves the original check visible and is reported
-  in the finalizer log. The three explicit OpenAI verdicts remain authoritative.
+- The copyable caller's `pull_request_target` job only dispatches the same
+  workflow on the repository's trusted default branch, with the PR number as
+  its sole input. The default-branch worker and comment retries share a worker
+  concurrency group; the dispatcher has a separate group so its child cannot
+  cancel it. No PR-head code or branch name is used to run the worker. Draft,
+  closed, and stale-head events are skipped. A failed dispatch remains visible
+  instead of being reported as a successful review.
+- Only the three explicit OpenAI checks carry the review verdict on the PR
+  head. Native worker jobs belong to default-branch executions, including
+  failures and cancellations, so a later successful comment retry can replace
+  the verdict without leaving an obsolete native review failure on the PR.
+  Configure these three checks as merge requirements, not native worker jobs.
+  This requires copying the updated caller into the consuming repository's
+  default branch; updating `latest` alone cannot change a caller's triggers
+  or concurrency. Existing callers can retain their repository-specific policy.
+- Older direct callers may already have a failed native `review / review`
+  beside three passing OpenAI checks. GitHub prohibits changing native Actions
+  status/conclusion through the Checks API. Refresh those legacy native checks
+  with a new PR event (for example, a substantive metadata update or push), and
+  let it finish without also posting a concurrent comment retry. Do not erase
+  failures, mark them successful through custom checks, or rerun old workflow
+  attempts. The dispatcher migration prevents new worker failures from being
+  attached to the PR head; it does not rewrite execution history.
 - `OpenAI PR Review` checks the title, body, and closing-Issue linkage. The
   closing Issues are the ones the PR body names with a closing keyword.
   When a closing Issue has open native sub-issues, every open child must also

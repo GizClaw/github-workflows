@@ -5,13 +5,13 @@ on:
     paths:
       - .github/scripts/**
       - .github/workflows/test-review-scripts.yml
-      - .github/workflows/codex-openai-review.yml
+      - .github/workflows/openai-pr-review-dispatch.yml
   push:
     branches: [main]
     paths:
       - .github/scripts/**
       - .github/workflows/test-review-scripts.yml
-      - .github/workflows/codex-openai-review.yml
+      - .github/workflows/openai-pr-review-dispatch.yml
 
 permissions:
   contents: read
@@ -20,8 +20,6 @@ jobs:
   test:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    outputs:
-      check_run_id: ${{ job.check_run_id }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
@@ -29,65 +27,9 @@ jobs:
       - name: Binary evidence, review orchestration and readiness regression tests
         run: |
           node .github/scripts/pr-review/binary-test.mjs
-          node .github/scripts/pr-review/checks-test.mjs
           node .github/scripts/pr-review/test.mjs
           node .github/scripts/pr-review/lfs-test.mjs
           node .github/scripts/pr-readiness/test.mjs
           node .github/scripts/issue-review/test.mjs
           node .github/scripts/review-request/test.mjs
-
-  verify-native-check-updates:
-    needs: test
-    if: >-
-      github.actor != 'dependabot[bot]' &&
-      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    permissions:
-      actions: read
-      checks: write
-    steps:
-      - name: Verify native Checks API support on this run's completed unit-test job
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
-        env:
-          UNIT_CHECK_RUN_ID: ${{ needs.test.outputs.check_run_id }}
-        with:
-          script: |
-            const checkId = Number(process.env.UNIT_CHECK_RUN_ID);
-            if (!Number.isSafeInteger(checkId) || checkId < 1) throw new Error('Missing native unit-test check ID');
-            let sequence = 0;
-            const fresh = () => ({
-              headers: { 'cache-control': 'no-cache' },
-              cache_bust: `${context.runId}-${Date.now()}-${sequence++}`,
-            });
-            const { data: run } = await github.rest.actions.getWorkflowRun({
-              ...fresh(), ...context.repo, run_id: context.runId,
-            });
-            const { data: original } = await github.rest.checks.get({
-              ...fresh(), ...context.repo, check_run_id: checkId,
-            });
-            const prefix = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}/job/`;
-            if (!original.details_url?.startsWith(prefix) || original.head_sha !== run.head_sha
-              || original.name !== 'test' || original.app?.slug !== 'github-actions'
-              || original.status !== 'completed' || original.conclusion !== 'success') {
-              throw new Error(`Native unit-test identity/state mismatch: ${original.name} ${original.status} ${original.conclusion}`);
-            }
-            // Exercise the real API only on our own successful test check, then
-            // restore its true result. No failed checks or other runs are touched.
-            try {
-              const { data: changed } = await github.rest.checks.update({
-                ...context.repo, check_run_id: checkId, status: 'completed', conclusion: 'neutral',
-                completed_at: original.completed_at,
-              });
-              if (changed.conclusion !== 'neutral') throw new Error('Native check conclusion was not updated');
-              const { data: verified } = await github.rest.checks.get({
-                ...fresh(), ...context.repo, check_run_id: checkId,
-              });
-              if (verified.conclusion !== 'neutral') throw new Error('Native check update could not be verified');
-            } finally {
-              await github.rest.checks.update({
-                ...context.repo, check_run_id: checkId, status: 'completed', conclusion: 'success',
-                completed_at: original.completed_at,
-              });
-            }
-            core.info('Native check reconciliation is supported; the successful unit-test result was restored.');
+          node .github/scripts/review-request/dispatch-test.mjs
