@@ -35,6 +35,7 @@ jobs:
       - name: Binary evidence, review orchestration and readiness regression tests
         run: |
           node .github/scripts/pr-review/binary-test.mjs
+          node .github/scripts/pr-review/session-artifacts-test.mjs
           node .github/scripts/pr-review/test.mjs
           node .github/scripts/pr-review/lfs-test.mjs
           node .github/scripts/pr-readiness/test.mjs

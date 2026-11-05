@@ -24,15 +24,12 @@ effort and accepts complete diffs up to 100,000,000 bytes. The legacy `model`,
 `effort`, and `max-diff-bytes` inputs remain accepted for pinned callers but are
 ignored. Existing callers must update their pinned workflow reference to receive
 this policy; they can then remove those three inputs. Codex CLI defaults to the
-pinned version `0.163.0`, and saved sessions must match that version before being
-restored.
+pinned version `0.163.0`.
 The caller must grant `checks: write` so the shared reviewer can expose its
 lifecycle on the reviewed PR head, and
 `pull-requests: write` for request reactions on PR comments and native review
 publication. It must also grant `issues: write` for Issue-triggered refreshes
-and `actions: write` so the reviewer can restore the latest per-PR Codex
-session artifact and delete superseded snapshots only after a replacement
-upload succeeds.
+and `actions: write` for the trusted default-branch dispatcher.
 
 In public caller repositories, complete binary-aware Git patches up to
 5,000,000 bytes are reviewed automatically. Binary models, images, and other
@@ -56,13 +53,14 @@ rejected in every repository.
 
 ## Behavior
 
-- Reviews an open, non-draft PR when it is opened, reopened, edited, marked
-  ready, or receives a new head through `synchronize`, including a PR from an
-  external fork.
-- Recalculates open PRs that GitHub lists as closing an Issue when that Issue
-  is edited, reopened, typed, or untyped, using the same caller and reusable PR
-  reviewer. A PR GitHub has not linked is refreshed by its next event or an
-  `@codex review` comment.
+- Requests review of an open, non-draft PR when it is opened, reopened, edited,
+  marked ready, or receives a new head through `synchronize`. For a fork PR,
+  GitHub may omit its source-run association; in that case the automatic worker
+  skips safely and a new `@codex review` PR comment is the manual fallback.
+- Recalculates open PRs in the caller repository that GitHub lists as closing
+  an Issue when that Issue is edited, reopened, typed, or untyped. References to
+  PRs in other repositories are not interpreted as local PR numbers. A PR GitHub
+  has not linked is refreshed by its next event or an `@codex review` comment.
 - A commenter can request a fresh review of an internal or fork PR by putting
   `@codex` or `@codex review <focus>` on its own line anywhere in a PR comment,
   so a comment that explains the push and ends with the request is accepted.
@@ -77,14 +75,16 @@ rejected in every repository.
   [`queue: max`](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency)
   and `cancel-in-progress: false`. GitHub retains up to 100 pending requests;
   unlike the default single-pending-slot behavior, a delayed automatic request
-  cannot evict a pending or running approval. Workers run in arrival order at
-  the concurrency queue, which is not necessarily original event order. Older
-  callers still cancel prior workers until their concurrency configuration is
-  migrated. Request comments use `👀` while running, `🚀` when finished
+  cannot evict a pending or running approval. Direct review requests and
+  linked-Issue refreshes share a job-level lock for each PR. Workers run in
+  queue-arrival order, which is not necessarily original event order: a delayed
+  Issue refresh may replace an earlier approval's final checks. Older callers
+  need to migrate their concurrency configuration. Request comments use `👀`
+  while running, `🚀` when finished
   (including a failed attempt), and `😕` when superseded or cancelled.
 - Actions workflow reruns are rejected before review work starts because a
-  rerun reuses an old event while resolving the PR's current head and can lose
-  the incremental checkpoint chain. Push a new commit, post a new
+  rerun reuses an old event while resolving the PR's current head. Push a new
+  commit, post a new
   `@codex review` comment, or dispatch a new workflow run instead.
 - Every accepted review creates three fixed Check Runs on the exact PR head:
   `OpenAI PR Review`, `OpenAI Issue Review`, and `OpenAI Code Review`. Each
@@ -151,10 +151,8 @@ rejected in every repository.
   any focus given in the `@codex review` comment. Comments are untrusted data
   written by any commenter: they never relax the trusted caller review profile,
   every claim must be checked against the diff, and a claim the diff
-  contradicts is reported. Discussion is deliberately excluded from every
-  content-addressed stage identity, so a comment on an unchanged head still
-  reuses evidence with zero model tokens and its text is not reviewed until a
-  code turn runs for another reason.
+  contradicts is reported. Each new request starts a fresh review and includes
+  the current discussion in the code-review context.
 - An execution failure publishes a titled PR comment with the specific failure
   reason and a link to the Actions run instead of leaving only a reaction.
 - Every published review reports the Codex review time, input, cached-input,
@@ -165,41 +163,24 @@ rejected in every repository.
   uses the output rate. This is a token-derived estimate, not an API billing
   ledger value. Folded report sections retain the stable PR session key,
   content-addressed generation key, reviewed commit range, deterministic diff
-  chunk count, and per-stage usage. The stage table identifies full,
-  incremental, reused, and deterministic work, including a separate row for
-  every linked Issue.
-  Reused and deterministic rows consume zero model tokens. Cached-input tokens
-  are part of input tokens, and reasoning-output tokens are part of output
-  tokens; neither is added to the total a second time.
-- Model sessions are bound to their trusted base commit. A changed base (or an
-  older artifact without that binding) starts a fresh conversation while keeping
-  the deterministic review ledger. Each model turn receives the current base
-  explicitly, and the runner checks that its Git object is available first.
+  chunk count, and per-stage usage, including a separate row for each linked
+  Issue. Deterministic rows consume zero model tokens. Cached-input tokens are
+  part of input tokens, and reasoning-output tokens are part of output tokens;
+  neither is added to the total a second time.
+- Every run starts a fresh model session bound to its trusted base commit. Each
+  model turn receives the current base explicitly, and the runner checks that
+  its Git object is available first.
 - A new conversation starts with native `codex review`, scoped to the first
-  prepared code diff chunk. It also receives the collected PR body and discussion
-  as untrusted background. Supplied artifact bytes must match the exact object
-  hashes in the diff; author claims cannot replace missing or unverifiable data.
-  Its validated findings become that chunk's
-  checkpoint. PR and Issue checks, remaining chunks, and aggregation continue
-  with `codex exec resume` on the primary session. Aggregation checks the native
-  chunk against the reviewed Issue plans before the final verdict. Older
-  conversations without the native-review version binding start this sequence
-  once; compatible sessions keep their incremental evidence and checkpoints.
-  The native review's child-thread tokens are counted separately, while the
-  primary rollout carries the findings needed after Artifact restore.
+  prepared code diff chunk. It receives the collected PR body and discussion as
+  untrusted background. Supplied binary evidence must match the exact object
+  hashes in the diff. PR and Issue checks, remaining chunks, and aggregation
+  continue with `codex exec resume` within that run. Aggregation checks the
+  native chunk against the reviewed Issue plans before the final verdict.
   Diff chunks define the changes under review; the reviewer can read related
   complete files and code context from the trusted checkout when needed.
-- Each PR has one logical Codex session. Its 30-day Artifact v2 snapshot stores
-  the validated Codex rollout plus a generation ledger containing the
-  last fully reviewed head, any in-progress target, the canonical file listing,
-  chunk hashes, completed chunk results, stage evidence, and usage. PR metadata,
-  every linked Issue, and code have independent content-addressed identities.
-  An unchanged stage reuses validated evidence with zero model tokens; an
-  edited PR or Issue sends only its field-level snapshot diff plus previous
-  evidence; a new code head sends only
-  `last_completed_head..current_head` when ancestry and base still match.
-  Force-pushes, incompatible base updates, missing sessions, corrupt state,
-  and relevant policy changes safely fall back to a complete stage review.
+- A 30-day Artifact v2 snapshot can record the run's Codex rollout and review
+  ledger for inspection. Snapshots are not restored into subsequent reviews:
+  each request performs a fresh full review, even for an unchanged head.
 - The reviewer fetches PR Git objects without checking out or executing the PR
   head and computes the complete diff locally, avoiding GitHub's 20,000-line
   PR-diff API limit. Files use stable byte-order listing. Diffs too large for
@@ -210,10 +191,9 @@ rejected in every repository.
   read-only evidence before the PR object database is removed. The canonical
   listing records Git blob IDs, SHA-256, size and content-addressed paths;
   native and resumed code-review turns receive that listing. Blob bytes are
-  verified on export and again on restore, and never become executable policy.
+  verified on export and before review, and never become executable policy.
   Evidence is limited to 32 MiB per blob and 128 MiB of unique blobs per
-  generation. Listing version 2 invalidates earlier checkpoints without this
-  evidence. The regression tests are `node .github/scripts/pr-review/binary-test.mjs`
+  generation. The regression tests are `node .github/scripts/pr-review/binary-test.mjs`
   and `node .github/scripts/pr-review/test.mjs`.
 - Every model turn reports an execution status separately from findings and
   policy blockers. Native review requires a structured completion event and an
@@ -222,20 +202,25 @@ rejected in every repository.
   Required input paths are checked for readability before the
   turn, and the reviewer is instructed to read these explicit inputs even when
   they live outside its working directory. An incomplete or missing execution
-  status fails the run without caching that turn or publishing a final verdict;
-  a new review request retries the unfinished work. Completed reviews with real
-  blockers remain reusable. Ledger schema v4 invalidates older evidence and
-  chunk checkpoints once, so older execution failures cannot remain cached as
-  completed reviews. The read-only permissions and network restrictions remain.
-- Failed chunk reviews checkpoint completed work in the replacement Artifact,
-  but do not advance `last_completed_head`. A retry resumes the first unfinished
-  chunk. Older snapshots are deleted only after the replacement upload
-  succeeds. A missing, expired, corrupt, or incompatible snapshot safely starts
-  a new session.
-- Fork PRs run through the caller repository's trusted default-branch
-  `pull_request_target` workflow and use the caller's explicitly forwarded
-  secret. Secrets from the contributor's fork are not imported or used.
-- Automatic PR events permit an external contributor to consume review
+  status fails the run without publishing a final verdict; a new request starts
+  a full review. The read-only permissions and network restrictions remain.
+- Snapshot restoration and automatic snapshot cleanup are disabled. GitHub's
+  artifact metadata associates an artifact with a workflow run, but does not
+  prove which job uploaded it; a sibling job running untrusted PR code could
+  forge both an artifact and a cache marker. Name prefixes, manifest hashes,
+  event checks and run metadata cannot establish job-level origin. Existing and
+  newly uploaded snapshots are retained until their configured expiry and are
+  never used as review evidence by this workflow.
+- Use an isolated caller in which no sibling job executes untrusted PR code.
+  Migrate older `pull_request` callers to the trusted default-branch dispatcher
+  below. A legacy direct caller also starts cold; its PR-workflow artifacts are
+  never restored. Concurrent snapshots are not deleted by the reviewer.
+- Fork PR reviews run through the caller repository's trusted default-branch
+  worker and use the caller's explicitly forwarded secret. Secrets from the
+  contributor's fork are not imported or used. Automatic dispatch requires
+  GitHub to associate the source run with the PR; if it does not, request a
+  review using a PR comment instead.
+- Automatic PR events can permit an external contributor to consume review
   requests up to the 5,000,000-byte automatic limit in public callers. Use a
   dedicated API project with appropriate usage limits and restrict the
   organization secret to selected repositories.
@@ -307,10 +292,8 @@ never in untrusted PR code.
 
 Readiness evidence records the reusable-workflow source for audit and binds the
 base/head revision, normalized PR metadata, closing-Issue snapshots, trusted
-policy, model, and effort. Final readiness is always regenerated for the
-current head. Within that run, only the affected content-addressed PR, Issue,
-or code stage is invalidated. A reusable-workflow source change alone does not
-invalidate a compatible session or its stage evidence.
+policy, model, and effort. Final readiness is regenerated for the current head.
+Each request starts a fresh session regardless of the reviewer revision.
 
 Success from all three OpenAI checks means only that the configured automated
 blockers were absent. It is not an approval and does not replace human review,
@@ -344,9 +327,7 @@ comma-separated repository-relative globs, for example
 `terraform/**/terraform.tfstate`. It is disabled by default. Before the offline
 review, the trusted runner fetches matching base/head objects from the caller's
 GitHub LFS endpoint, verifies their exact pointer size and SHA256, hydrates base
-files, and supplies separate before/after data for the actual diff range,
-including the previous reviewed head during incremental review. Changing the
-LFS path selection invalidates code evidence and starts a complete diff review.
+files, and supplies separate before/after data for the full review diff.
 It never checks out or runs
 the PR head. Acquisition fails closed above 64 MiB per object, 512 MiB total,
 or 1024 distinct objects; raw payloads and credentials are not printed.
@@ -359,79 +340,42 @@ It does not call the OpenAI API:
 npm exec --yes --package=@openai/codex@0.163.0 -- node .github/scripts/pr-review/native-session-test.mjs
 ```
 
-### Native review and resume acceptance
+### Native review acceptance
 
 Use one ready PR and two descendant documentation commits against the same
-trusted base. Keep the PR and linked-Issue metadata unchanged between runs.
-
-1. Let the first head's review finish. Inspect its session Artifact: the first
-   code chunk uses native review, the primary session has a native-review
-   version binding, and every chunk plus aggregation completes for that head.
-2. Push the second commit and let its review finish. Confirm the same primary
-   session ID is restored, the new generation is incremental, and its range is
-   exactly `first_completed_head..second_head`. PR and Issue evidence should be
-   reused while the new code work uses `codex exec resume`.
-   Compare the primary rollout's native-review entry count between Artifacts:
-   it must not increase. The second generation's chunks must have no native
-   review marker, and reused PR/Issue rows must report zero model tokens.
-
-Record both head IDs, run URLs, session ID, generation ranges, and the three
-fixed Check results in the validation PR. Keep the model, effort, CLI version,
-and trusted base identical for this comparison, and create a new run for each
-head rather than using Actions rerun.
+trusted base. For each new request, confirm that native review starts a fresh
+session, every diff chunk and aggregation completes, and all three fixed Checks
+are attached to the current PR head. The per-run `codex exec resume` calls still
+continue the native review within that same run. Existing session artifacts are
+neither downloaded nor deleted.
 
 ### Live validation matrix
 
 Use this matrix after the caller is present on the repository's default branch.
-Every run recreates the three fixed Checks on the exact current PR head; the
-stage modes below describe model work and evidence reuse inside that run.
+Each new request starts with a full review; `issues` requests revalidate the
+linked PRs they resolve.
 
-| Trigger | PR evidence | Issue evidence | Code evidence | Expected Check publication |
-| --- | --- | --- | --- | --- |
-| Open a ready PR | `full` | `full` for every linked Issue | `full` complete diff | All three fixed Checks |
-| Open a ready PR without closing Issues | `full` | No model turn | `full` complete diff, without Issue-plan checks | All three fixed Checks; Issue review passes |
-| Edit only the PR body | `incremental` field diff | `reused` | `reused` | All three, with only PR metadata re-reviewed |
-| Edit one linked Issue | `reused` | `incremental` for that Issue; others `reused` | `incremental` plan-conformance aggregation with no repeated complete code diff | All three, with Issue and Code verdicts revalidated |
-| Push a descendant commit | `reused` | `reused` | `incremental` from the last completed head | All three on the new head |
-| Merge the moved base branch into the PR | `reused` | `reused` | `full` from the new merge base; base-branch commits are never reviewed as PR changes | All three on the merge commit |
-| Rerun an unchanged head | deterministic checks plus `reused` | `reused` | `reused` | All three with zero model tokens |
+| Trigger | Expected review |
+| --- | --- |
+| Open a ready PR | Full PR, linked-Issue, and code review |
+| Open a ready PR without closing Issues | Full PR and code review; Issue review passes without a model turn |
+| Edit the PR body or a linked Issue | Full review with the updated metadata |
+| Push a descendant commit or merge a moved base | Full review of the current PR diff |
+| Post a new request on an unchanged head | Fresh full review, not cached evidence |
 
-The code diff always starts at the merge base between the live base branch
-tip and the PR head, matching the PR's own "Files changed" view.
-`pull_request.base.sha` stays at the base commit recorded when the head was
-last pushed, so it is only used to check out trusted reviewer code, never to
-decide what counts as a PR change. A base branch that moves without being
-merged keeps the merge base and reuses evidence; merging it moves the merge
-base and starts a fresh full code review so base-branch commits do not appear
-as pull-request changes. A full generation aggregates only its own chunk
-reviews; the previous code review is offered for preservation to incremental
-generations alone, so findings about an earlier range cannot outlive the diff
-that produced them.
-
-Every Issue-stage turn, including an incremental one, also receives the
-current native Issue Type, state, parent, sub-issues, and dependencies plus the
-deterministic relationship checks. The reviewer re-validates previous blockers
-against those current values and drops any they contradict, so a wrong blocker
-about metadata that never changes cannot outlive its evidence. Changing that
-input shape invalidates cached Issue evidence once, revalidating it as an
-incremental turn.
-
-An Issue edit revalidates plan conformance without resending an unchanged
-complete code diff. A runtime, model, or trusted-policy change intentionally
-invalidates incompatible session evidence and safely starts the affected
-review stages again. A workflow-source change remains auditable but preserves
-compatible cached evidence.
-The optional-Issue policy changes stage identities once, so cached blockers
-from the former mandatory-linkage policy are revalidated.
+The code diff starts at the merge base between the live base branch tip and the
+PR head, matching the PR's own "Files changed" view. `pull_request.base.sha`
+is used to check out trusted reviewer code, not to decide what counts as a PR
+change. Each Issue-stage turn receives the current native Issue Type, state,
+parent, sub-issues, dependencies and deterministic relationship checks.
 
 When editing PR metadata, preserve the closing keywords in the body.
-Removing or changing a closing reference changes the plan-conformance identity
-and intentionally invalidates the affected Code evidence.
+Removing or changing a closing reference changes the plans considered by the
+next full review.
 
 1. Copy `openai-pr-review-dispatch.yml` into the caller repository's default
    branch.
-2. Replace local reusable-workflow paths with a protected `v1` reference or an
-   immutable commit SHA.
+2. Replace local reusable-workflow paths with the protected `latest` reference.
 3. Configure trusted repository-specific review instructions.
 4. Store `OPENAI_API_KEY` in an allowlisted organization or repository secret
    and forward it explicitly.
@@ -439,10 +383,10 @@ and intentionally invalidates the affected Code evidence.
    implementation-ready Issue. Confirm all three fixed OpenAI Checks are
    attached to each exact head and the unlinked PR does not fail for missing
    Issues.
-6. Push a new commit and confirm code is reviewed incrementally while unchanged
-   PR and Issue evidence is reused with zero model tokens.
+6. Push a new commit and confirm the new run performs a full review of the
+   current PR diff without downloading prior session artifacts.
 7. Test invalid PR metadata, an incomplete Issue, an unexplained plan
    deviation, and an actionable code finding.
-8. Edit one linked Issue and confirm only that Issue stage runs incrementally.
+8. Edit one linked Issue and confirm the linked PR receives a fresh review.
 9. Only after live tests pass, configure all three fixed Check names as required
    status checks in the caller repository ruleset.

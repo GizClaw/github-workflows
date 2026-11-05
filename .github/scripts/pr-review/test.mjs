@@ -200,7 +200,7 @@ const workflowSource = fs.readFileSync(
   "utf8",
 );
 // Deprecated caller inputs must not override the policy that is used for
-// execution, session restore, readiness evidence, or review publication.
+// execution, readiness evidence, or review publication.
 assert.doesNotMatch(workflowSource, /\$\{\{ inputs\.(?:model|effort|max-diff-bytes) \}\}/);
 assert.match(workflowSource, /^  review:\n(?:(?!^  \S)[\s\S])*?^      REVIEW_MODEL: gpt-6\.1-sol$/m);
 assert.match(workflowSource, /^  review:\n(?:(?!^  \S)[\s\S])*?^      REVIEW_EFFORT: max$/m);
@@ -214,8 +214,8 @@ assert.match(workflowSource, /getCollaboratorPermissionLevel/);
 assert.match(workflowSource, /^  publish:\n(?:(?!^  \S)[\s\S])*?^      REVIEW_MODEL: gpt-6\.1-sol$/m);
 assert.match(workflowSource, /^  publish:\n(?:(?!^  \S)[\s\S])*?^      REVIEW_EFFORT: max$/m);
 assert.match(workflowSource, /MAX_DIFF_BYTES: \$\{\{ env\.REVIEW_MAX_DIFF_BYTES \}\}/);
-assert.equal((workflowSource.match(/MODEL: \$\{\{ env\.REVIEW_MODEL \}\}/g) ?? []).length, 5);
-assert.equal((workflowSource.match(/EFFORT: \$\{\{ env\.REVIEW_EFFORT \}\}/g) ?? []).length, 5);
+assert.equal((workflowSource.match(/MODEL: \$\{\{ env\.REVIEW_MODEL \}\}/g) ?? []).length, 4);
+assert.equal((workflowSource.match(/EFFORT: \$\{\{ env\.REVIEW_EFFORT \}\}/g) ?? []).length, 4);
 const dispatchSource = fs.readFileSync(
   path.join(path.dirname(new URL(import.meta.url).pathname), "..", "..", "workflows", "openai-pr-review-dispatch.yml"),
   "utf8",
@@ -336,7 +336,7 @@ function inlineScripts(source) {
 }
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 const scripts = inlineScripts(workflowSource);
-assert.ok(scripts.length >= 8, "inline github-script blocks must be extractable");
+assert.ok(scripts.length >= 6, "inline github-script blocks must be extractable");
 for (const [index, body] of scripts.entries()) {
   assert.doesNotThrow(
     () => new AsyncFunction("require", "github", "context", "core", body),
