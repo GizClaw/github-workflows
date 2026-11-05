@@ -53,6 +53,11 @@ on:
         required: false
         default: ''
         type: string
+      dispatch_source_run_id:
+        description: Original PR-event run to fence delayed automatic dispatches after queue admission.
+        required: false
+        default: ''
+        type: string
       base_sha:
         description: Reserved for callers that already resolved a pull request.
         required: false
@@ -93,7 +98,9 @@ jobs:
     if: github.run_attempt == 1
     runs-on: ubuntu-latest
     permissions:
+      actions: read
       contents: read
+      issues: read
       pull-requests: read
     outputs:
       eligible: ${{ steps.pr.outputs.eligible }}
@@ -105,8 +112,8 @@ jobs:
       large_diff_approved: ${{ steps.pr.outputs.large_diff_approved }}
       private_repository: ${{ steps.pr.outputs.private_repository }}
     steps:
-      - name: Check out the exact comment-trigger implementation
-        if: github.event_name == 'issue_comment'
+      - name: Check out the exact request-validation implementation
+        if: github.event_name == 'issue_comment' || inputs.dispatch_source_run_id != ''
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           repository: ${{ job.workflow_repository }}
@@ -132,6 +139,7 @@ jobs:
         env:
           REQUESTED_PULL_NUMBER: ${{ inputs.pull_request_number }}
           COMMENT_REVIEW_REQUESTED: ${{ steps.request.outputs.requested }}
+          DISPATCH_SOURCE_RUN_ID: ${{ inputs.dispatch_source_run_id }}
         with:
           script: |
             const event = context.eventName;
@@ -152,7 +160,26 @@ jobs:
             } else {
               return core.setOutput('eligible', 'false');
             }
-            const { data: pr } = await github.rest.pulls.get({ owner: context.repo.owner, repo: context.repo.repo, pull_number: Number(number) });
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner, repo: context.repo.repo, pull_number: Number(number),
+              headers: { 'cache-control': 'no-cache' }, cache_bust: `${context.runId}-${Date.now()}`,
+            });
+            if (process.env.DISPATCH_SOURCE_RUN_ID) {
+              const { pathToFileURL } = require('node:url');
+              const path = require('node:path');
+              const source = pathToFileURL(path.join(
+                process.env.GITHUB_WORKSPACE, '.openai-pr-review-trigger-source',
+                '.github/scripts/review-request/dispatch-fence.mjs',
+              )).href;
+              const { automaticDispatchFence } = await import(source);
+              const admission = await automaticDispatchFence({
+                github, context, sourceRunId: process.env.DISPATCH_SOURCE_RUN_ID, pull: pr,
+              });
+              if (!admission.eligible) {
+                core.info(admission.reason);
+                return core.setOutput('eligible', 'false');
+              }
+            }
             const sameRepository = pr.head.repo?.full_name?.toLowerCase()
               === `${context.repo.owner}/${context.repo.repo}`.toLowerCase();
             const trustedBaseEvent = [

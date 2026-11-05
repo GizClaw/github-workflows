@@ -30,10 +30,10 @@ function fixture() {
   return state;
 }
 
-test("a PR event dispatches only its number to the trusted default branch", async () => {
+test("a PR event dispatches its number and original run identity to the trusted default branch", async () => {
   const state = fixture();
   await state.execute();
-  assert.deepEqual(state.requests, [{ owner: "example", repo: "project", workflow_id: 40, ref: "main", inputs: { pull_request_number: "13" } }]);
+  assert.deepEqual(state.requests, [{ owner: "example", repo: "project", workflow_id: 40, ref: "main", inputs: { pull_request_number: "13", dispatch_source_run_id: "300" } }]);
   assert.equal(state.reads, 3);
 });
 
@@ -42,7 +42,7 @@ test("fork branches and default-branch names are resolved independently", async 
   state.pull.head.ref = "contributor/credential-grab";
   await state.execute();
   assert.equal(state.requests[0].ref, "master");
-  assert.deepEqual(state.requests[0].inputs, { pull_request_number: "13" });
+  assert.deepEqual(state.requests[0].inputs, { pull_request_number: "13", dispatch_source_run_id: "300" });
   assert.ok(!JSON.stringify(state.requests).includes(state.pull.head.ref));
 });
 
@@ -96,6 +96,9 @@ test("dispatcher and worker have separate concurrency lanes and trusted event ga
   assert.match(dispatchJob, /^    if: github\.event_name == 'pull_request_target'$/m);
   assert.match(workflow, /^  review:\n    if: github\.event_name != 'issues' && github\.event_name != 'pull_request_target'$/m);
   assert.match(dispatchJob, /actions: write/);
+  assert.match(workflow, /^  queue: max$/m);
+  assert.match(workflow, /^  cancel-in-progress: false$/m);
+  assert.match(workflow, /dispatch_source_run_id: \$\{\{ inputs\.dispatch_source_run_id \}\}/);
   assert.doesNotMatch(dispatchJob, /actions\/checkout|OPENAI_API_KEY|checks\.update|continue-on-error/);
   assert.match(workflow, /pull_request_number: \$\{\{ inputs\.pull_request_number \}\}/);
 });

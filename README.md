@@ -73,9 +73,15 @@ rejected in every repository.
   comment authored by an app. Apply repository and
   API-project usage limits appropriate for a public trigger.
 - **Run workflow** accepts a pull-request number as a manual fallback.
-- A new request for the same PR cancels the previous one. Request comments use
-  `👀` while running, `🚀` when finished (including a failed attempt), and `😕`
-  when superseded or cancelled.
+- The updated caller serializes requests for the same PR with
+  [`queue: max`](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency)
+  and `cancel-in-progress: false`. GitHub retains up to 100 pending requests;
+  unlike the default single-pending-slot behavior, a delayed automatic request
+  cannot evict a pending or running approval. Workers run in arrival order at
+  the concurrency queue, which is not necessarily original event order. Older
+  callers still cancel prior workers until their concurrency configuration is
+  migrated. Request comments use `👀` while running, `🚀` when finished
+  (including a failed attempt), and `😕` when superseded or cancelled.
 - Actions workflow reruns are rejected before review work starts because a
   rerun reuses an old event while resolving the PR's current head and can lose
   the incremental checkpoint chain. Push a new commit, post a new
@@ -87,12 +93,25 @@ rejected in every repository.
   default view keeps the PR-format, Issue-design, and code/plan-conformance
   verdicts visible alongside the reviewed scope and aggregate usage.
 - The copyable caller's `pull_request_target` job only dispatches the same
-  workflow on the repository's trusted default branch, with the PR number as
-  its sole input. The default-branch worker and comment retries share a worker
-  concurrency group; the dispatcher has a separate group so its child cannot
-  cancel it. No PR-head code or branch name is used to run the worker. Draft,
-  closed, and stale-head events are skipped. A failed dispatch remains visible
-  instead of being reported as a successful review.
+  workflow on the repository's trusted default branch, passing the PR number
+  and original dispatcher run ID. The default-branch worker and comment
+  retries share a worker queue; the dispatcher has a separate queue. No PR-head
+  code or branch name is used to run the worker. Draft, closed, and stale-head
+  events are skipped. A failed dispatch remains visible instead of being
+  reported as a successful review.
+- Once an automatic worker acquires its queue slot, the reusable resolver
+  verifies the source run's repository-local workflow identity, immutable
+  `head_sha`, PR association, first attempt and creation time. The association's
+  nested head can change after pushes and is not used as original-head evidence.
+  It reads all newer review-request comments
+  using the existing parser, without accepting quoted text or bot messages. A
+  newer (or same-second) review comment fences the old automatic worker before
+  it creates checks or touches review checkpoints. The boundary is the original
+  dispatcher's timestamp, not its delayed child's arrival. If an approval
+  arrives after this check, the queue retains it and runs it after the current
+  worker. Approval is never copied into the automatic request: the original
+  comment resolver still verifies admin permission and exact-head approval.
+  Source lookup or comment pagination errors fail closed.
 - Only the three explicit OpenAI checks carry the review verdict on the PR
   head. Native worker jobs belong to default-branch executions, including
   failures and cancellations, so a later successful comment retry can replace
@@ -100,7 +119,9 @@ rejected in every repository.
   Configure these three checks as merge requirements, not native worker jobs.
   This requires copying the updated caller into the consuming repository's
   default branch; updating `latest` alone cannot change a caller's triggers
-  or concurrency. Existing callers can retain their repository-specific policy.
+  or concurrency. Publish the shared resolver's `dispatch_source_run_id`
+  support to `latest` before migrating consumer callers to pass that new input.
+  Existing callers can retain their repository-specific policy.
 - Older direct callers may already have a failed native `review / review`
   beside three passing OpenAI checks. GitHub prohibits changing native Actions
   status/conclusion through the Checks API. Refresh those legacy native checks
