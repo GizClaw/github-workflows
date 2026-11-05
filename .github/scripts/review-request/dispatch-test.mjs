@@ -3,7 +3,7 @@ import fs from "node:fs";
 import test from "node:test";
 
 const workflow = fs.readFileSync(new URL("../../workflows/openai-pr-review-dispatch.yml", import.meta.url), "utf8");
-const dispatchJob = workflow.match(/^  dispatch_review:\n([\s\S]*?)(?=^  review:)/m)?.[0];
+const dispatchJob = workflow.match(/^  dispatch_review:\n([\s\S]*?)(?=^  resolve_review_target:)/m)?.[0];
 assert.ok(dispatchJob);
 const body = dispatchJob.split("          script: |\n")[1].split("\n")
   .map(line => line.startsWith("            ") ? line.slice(12) : line).join("\n");
@@ -94,11 +94,48 @@ test("dispatch API failures remain visible to the PR instead of faking success",
 test("dispatcher and worker have separate concurrency lanes and trusted event gates", () => {
   assert.match(workflow, /group: openai-pr-review-\$\{\{ github\.event_name == 'pull_request_target' && 'dispatch' \|\| 'worker' \}\}/);
   assert.match(dispatchJob, /^    if: github\.event_name == 'pull_request_target'$/m);
-  assert.match(workflow, /^  review:\n    if: github\.event_name != 'issues' && github\.event_name != 'pull_request_target'$/m);
+  assert.match(workflow, /^  review:\n    needs: resolve_review_target\n    if: github\.event_name != 'issues' && github\.event_name != 'pull_request_target'$/m);
   assert.match(dispatchJob, /actions: write/);
   assert.match(workflow, /^  queue: max$/m);
   assert.match(workflow, /^  cancel-in-progress: false$/m);
   assert.match(workflow, /dispatch_source_run_id: \$\{\{ inputs\.dispatch_source_run_id \}\}/);
   assert.doesNotMatch(dispatchJob, /actions\/checkout|OPENAI_API_KEY|checks\.update|continue-on-error/);
   assert.match(workflow, /pull_request_number: \$\{\{ inputs\.pull_request_number \}\}/);
+});
+
+test("PR requests and linked-Issue refreshes share a queued per-PR invocation lock", () => {
+  const review = workflow.match(/^  review:\n[\s\S]*?(?=^  resolve_linked_prs:)/m)?.[0];
+  const refresh = workflow.match(/^  refresh_linked_prs:\n[\s\S]*/m)?.[0];
+  assert.ok(review);
+  assert.ok(refresh);
+  assert.match(review, /group: openai-pr-review-invoke-\$\{\{ needs\.resolve_review_target\.outputs\.number \}\}/);
+  assert.match(refresh, /group: openai-pr-review-invoke-\$\{\{ matrix\.pull_request_number \}\}/);
+  for (const job of [review, refresh]) {
+    assert.match(job, /queue: max/);
+    assert.match(job, /cancel-in-progress: false/);
+  }
+});
+
+test("the invocation lock normalizes PR numbers and rejects invalid targets", () => {
+  const job = workflow.match(/^  resolve_review_target:\n[\s\S]*?(?=^  review:)/m)?.[0];
+  const body = job?.match(/          node <<'NODE'\n([\s\S]*?)\n          NODE/)?.[1];
+  assert.ok(body);
+  const run = new Function("require", "process", body);
+  const invoke = (event, isPR, input, issue) => {
+    let output = "";
+    run(name => {
+      assert.equal(name, "node:fs");
+      return { appendFileSync: (file, value) => { assert.equal(file, "output"); output += value; } };
+    }, { env: { GITHUB_OUTPUT: "output", CODEX_REVIEW_EVENT_NAME: event, CODEX_REVIEW_IS_PR: isPR,
+      CODEX_REVIEW_PR_INPUT: input, CODEX_REVIEW_ISSUE_NUMBER: issue } });
+    return output;
+  };
+  for (const value of ["13", "0013", "13.0"]) {
+    assert.equal(invoke("workflow_dispatch", "false", value, ""), "number=13\n");
+  }
+  assert.equal(invoke("issue_comment", "true", "", "13"), "number=13\n");
+  for (const value of ["", "0", "1.1", "not-a-number", "9007199254740992"]) {
+    assert.throws(() => invoke("workflow_dispatch", "false", value, ""), /positive safe integer/);
+  }
+  assert.throws(() => invoke("issue_comment", "false", "", "13"), /Unsupported review event/);
 });
