@@ -116,6 +116,34 @@ test("PR requests and linked-Issue refreshes share a queued per-PR invocation lo
   }
 });
 
+test("linked-Issue refreshes select only open PRs in the caller repository", async () => {
+  const job = workflow.match(/^  resolve_linked_prs:\n[\s\S]*?(?=^  refresh_linked_prs:)/m)?.[0];
+  assert.ok(job);
+  const body = job.split("          script: |\n")[1].split("\n")
+    .map(line => line.startsWith("            ") ? line.slice(12) : line).join("\n");
+  const resolve = new AsyncFunction("github", "context", "core", body);
+  const nodes = [
+    { number: 12, state: "OPEN", repository: { nameWithOwner: "example/project" } },
+    { number: 13, state: "OPEN", repository: { nameWithOwner: "other/project" } },
+    { number: 14, state: "CLOSED", repository: { nameWithOwner: "Example/Project" } },
+  ];
+  const result = { repository: { issue: { closedByPullRequestsReferences: { totalCount: nodes.length, nodes } } } };
+  const outputs = {};
+  const github = { graphql: async query => {
+    assert.match(query, /repository\s*\{\s*nameWithOwner\s*\}/);
+    return result;
+  } };
+  const context = { repo: { owner: "Example", repo: "Project" }, payload: { issue: { number: 1 } } };
+  const core = { setOutput: (key, value) => { outputs[key] = value; } };
+  await resolve(github, context, core);
+  assert.deepEqual(outputs, { pull_requests: "[12]", pull_request_count: "1" });
+  nodes[1].repository = null;
+  await assert.rejects(resolve(github, context, core), /linked pull request repository/);
+  nodes[1].repository = { nameWithOwner: "other/project" };
+  result.repository.issue.closedByPullRequestsReferences.totalCount = 51;
+  await assert.rejects(resolve(github, context, core), /within the configured bound/);
+});
+
 test("the invocation lock normalizes PR numbers and rejects invalid targets", () => {
   const job = workflow.match(/^  resolve_review_target:\n[\s\S]*?(?=^  review:)/m)?.[0];
   const body = job?.match(/          node <<'NODE'\n([\s\S]*?)\n          NODE/)?.[1];
