@@ -53,9 +53,10 @@ rejected in every repository.
 
 ## Behavior
 
-- Reviews an open, non-draft PR when it is opened, reopened, edited, marked
-  ready, or receives a new head through `synchronize`, including a PR from an
-  external fork.
+- Requests review of an open, non-draft PR when it is opened, reopened, edited,
+  marked ready, or receives a new head through `synchronize`. For a fork PR,
+  GitHub may omit its source-run association; in that case the automatic worker
+  skips safely and a new `@codex review` PR comment is the manual fallback.
 - Recalculates open PRs in the caller repository that GitHub lists as closing
   an Issue when that Issue is edited, reopened, typed, or untyped. References to
   PRs in other repositories are not interpreted as local PR numbers. A PR GitHub
@@ -214,10 +215,12 @@ rejected in every repository.
   Migrate older `pull_request` callers to the trusted default-branch dispatcher
   below. A legacy direct caller also starts cold; its PR-workflow artifacts are
   never restored. Concurrent snapshots are not deleted by the reviewer.
-- Fork PRs run through the caller repository's trusted default-branch
-  `pull_request_target` workflow and use the caller's explicitly forwarded
-  secret. Secrets from the contributor's fork are not imported or used.
-- Automatic PR events permit an external contributor to consume review
+- Fork PR reviews run through the caller repository's trusted default-branch
+  worker and use the caller's explicitly forwarded secret. Secrets from the
+  contributor's fork are not imported or used. Automatic dispatch requires
+  GitHub to associate the source run with the PR; if it does not, request a
+  review using a PR comment instead.
+- Automatic PR events can permit an external contributor to consume review
   requests up to the 5,000,000-byte automatic limit in public callers. Use a
   dedicated API project with appropriate usage limits and restrict the
   organization secret to selected repositories.
