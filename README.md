@@ -177,7 +177,9 @@ rejected in every repository.
   continue with `codex exec resume` within that run. Aggregation checks the
   native chunk against the reviewed Issue plans before the final verdict.
   Diff chunks define the changes under review; the reviewer can read related
-  complete files and code context from the trusted checkout when needed.
+  complete files and code context from the trusted checkout when needed. The
+  exact reusable workflow executing the review is also available as read-only
+  implementation context; a ref proposed in the PR may point elsewhere.
 - A 30-day Artifact v2 snapshot can record the run's Codex rollout and review
   ledger for inspection. Snapshots are not restored into subsequent reviews:
   each request performs a fresh full review, even for an unchanged head.
