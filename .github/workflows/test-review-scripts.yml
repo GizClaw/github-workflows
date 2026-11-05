@@ -5,14 +5,24 @@ on:
     paths:
       - .github/scripts/**
       - .github/workflows/test-review-scripts.yml
+      - .github/workflows/openai-pr-review-dispatch.yml
+      - .github/workflows/codex-openai-review.yml
   push:
     branches: [main]
     paths:
       - .github/scripts/**
       - .github/workflows/test-review-scripts.yml
+      - .github/workflows/openai-pr-review-dispatch.yml
+      - .github/workflows/codex-openai-review.yml
 
 permissions:
   contents: read
+
+# Exercise the same supported queue mode used by the caller before rollout.
+concurrency:
+  group: review-script-tests-${{ github.ref }}
+  queue: max
+  cancel-in-progress: false
 
 jobs:
   test:
@@ -30,3 +40,5 @@ jobs:
           node .github/scripts/pr-readiness/test.mjs
           node .github/scripts/issue-review/test.mjs
           node .github/scripts/review-request/test.mjs
+          node .github/scripts/review-request/dispatch-test.mjs
+          node .github/scripts/review-request/dispatch-fence-test.mjs
