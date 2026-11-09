@@ -373,7 +373,8 @@ range from the first fully reviewed head to the new head. Confirm unchanged PR
 and Issue stages reuse evidence, every pending chunk and aggregation completes,
 and all three fixed Checks are attached to the new head. A subsequent unchanged
 request should reuse completed evidence with zero model tokens. Old snapshots
-remain available until expiry.
+remain available until expiry. To identify the restored source, compare the new
+manifest's `previous_artifact_id` with the preceding run's uploaded Artifact ID.
 
 ### Live validation matrix
 
