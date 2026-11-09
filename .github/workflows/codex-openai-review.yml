@@ -396,13 +396,13 @@ jobs:
       PR_HEAD_SHA: ${{ needs.resolve.outputs.head_sha }}
       REQUEST_COMMENT_ID: ${{ needs.resolve.outputs.request_comment_id }}
       SESSION_KEY: repo-${{ github.repository_id }}-pr-${{ needs.resolve.outputs.number }}-v2
-      SESSION_ARTIFACT_NAME: openai-pr-review-session-v2-${{ github.repository_id }}-pr-${{ needs.resolve.outputs.number }}-run-${{ github.run_id }}-attempt-${{ github.run_attempt }}
     steps:
       - name: Initialize PR review session paths
         run: |
           {
             echo "CODEX_HOME=$RUNNER_TEMP/openai-pr-review-codex-home"
             echo "SESSION_SNAPSHOT_DIR=$RUNNER_TEMP/openai-pr-review-session-snapshot"
+            echo "SESSION_DOWNLOAD_DIR=$RUNNER_TEMP/openai-pr-review-session-download"
             echo "PR_REVIEW_STATE_DIR=$RUNNER_TEMP/openai-pr-review-state"
             echo "PR_DIFF_REPOSITORY=$RUNNER_TEMP/openai-pr-review-diff.git"
             echo "REVIEWER_SOURCE_DIR=$GITHUB_WORKSPACE/.openai-pr-review-workflow-source"
@@ -657,19 +657,57 @@ jobs:
             exit 1
           fi
 
-      - name: Start a fresh PR review session
+      - name: Find the previous authenticated session for this PR
+        id: find_session
+        continue-on-error: true
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          REPOSITORY_ID: ${{ github.repository_id }}
+        with:
+          script: |
+            const { pathToFileURL } = require('node:url');
+            const path = require('node:path');
+            const { findSessionArtifact } = await import(pathToFileURL(path.join(
+              process.env.REVIEWER_SOURCE_DIR,
+              '.github/scripts/pr-review/session-artifacts.mjs',
+            )).href);
+            const artifact = await findSessionArtifact({
+              github, context, repositoryId: process.env.REPOSITORY_ID,
+              pullNumber: process.env.PULL_REQUEST_NUMBER, key: process.env.OPENAI_API_KEY,
+            });
+            core.setOutput('found', String(Boolean(artifact)));
+            core.setOutput('artifact_id', artifact ? String(artifact.id) : '');
+            core.setOutput('run_id', artifact ? String(artifact.workflow_run.id) : '');
+
+      - name: Download the previous PR review session
+        id: download_session
+        if: steps.find_session.outputs.found == 'true'
+        continue-on-error: true
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          artifact-ids: ${{ steps.find_session.outputs.artifact_id }}
+          path: ${{ env.SESSION_DOWNLOAD_DIR }}
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ steps.find_session.outputs.run_id }}
+          merge-multiple: true
+
+      - name: Restore and authenticate the previous PR review session
         id: restore_session
-        run: |
-          node <<'NODE'
-          const fs = require('node:fs');
-          for (const name of ['CODEX_HOME', 'PR_REVIEW_STATE_DIR']) {
-            if (!process.env[name]) throw new Error(`Missing ${name}`);
-            fs.rmSync(process.env[name], { recursive: true, force: true });
-          }
-          fs.appendFileSync(process.env.GITHUB_OUTPUT,
-            'resumed=false\nsession_id=\nprevious_artifact_id=\n');
-          process.stdout.write('Session artifact reuse is disabled; starting a fresh review.\n');
-          NODE
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          EXPECTED_ARTIFACT_ID: ${{ steps.download_session.outcome == 'success' && steps.find_session.outputs.artifact_id || '' }}
+          EXPECTED_RUN_ID: ${{ steps.find_session.outputs.run_id }}
+          EXPECTED_CODEX_VERSION: ${{ inputs.codex-version }}
+          EXPECTED_MODEL: ${{ env.REVIEW_MODEL }}
+          EXPECTED_EFFORT: ${{ env.REVIEW_EFFORT }}
+          REPOSITORY_ID: ${{ github.repository_id }}
+          REVIEW_INSTRUCTIONS: >-
+            ${{ inputs.review-instructions }}
+            ${{ inputs.issue-review-instructions }}
+            ${{ inputs.pr-readiness-instructions }}
+        run: node "$REVIEWER_SOURCE_DIR/.github/scripts/pr-review/session-artifacts.mjs" restore
 
       - name: Prepare deterministic PR diff listing
         id: prepare_diff
@@ -948,15 +986,24 @@ jobs:
           output('session_bytes', String(manifest.session_bytes));
           NODE
 
+      - name: Authenticate the updated PR review session
+        id: authenticate_session
+        if: steps.prepare_session.outputs.ready == 'true'
+        continue-on-error: true
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: node "$REVIEWER_SOURCE_DIR/.github/scripts/pr-review/session-artifacts.mjs" sign
+
       - name: Upload updated PR review session
         id: upload_session
-        if: steps.prepare_session.outputs.ready == 'true'
+        if: steps.authenticate_session.outcome == 'success'
         continue-on-error: true
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: ${{ env.SESSION_ARTIFACT_NAME }}
+          name: ${{ steps.authenticate_session.outputs.artifact_name }}
           path: |
             ${{ env.SESSION_SNAPSHOT_DIR }}/manifest.json
+            ${{ env.SESSION_SNAPSHOT_DIR }}/manifest.hmac
             ${{ env.SESSION_SNAPSHOT_DIR }}/session.jsonl
             ${{ env.SESSION_SNAPSHOT_DIR }}/state
           if-no-files-found: error

@@ -25,6 +25,7 @@ import {
   totalMetrics,
 } from "./stages.mjs";
 import { readNativeReview } from "./native.mjs";
+import { restoreSnapshot, signSnapshot } from "./session-artifacts.mjs";
 import { analyzePullRequest, evaluateReadiness } from "../pr-readiness/common.mjs";
 
 assert.deepEqual(rangesFromNumbers([5, 2, 3, 3, 8]), [[2, 3], [5, 5], [8, 8]]);
@@ -214,8 +215,8 @@ assert.match(workflowSource, /getCollaboratorPermissionLevel/);
 assert.match(workflowSource, /^  publish:\n(?:(?!^  \S)[\s\S])*?^      REVIEW_MODEL: gpt-6\.1-terra$/m);
 assert.match(workflowSource, /^  publish:\n(?:(?!^  \S)[\s\S])*?^      REVIEW_EFFORT: xhigh$/m);
 assert.match(workflowSource, /MAX_DIFF_BYTES: \$\{\{ env\.REVIEW_MAX_DIFF_BYTES \}\}/);
-assert.equal((workflowSource.match(/MODEL: \$\{\{ env\.REVIEW_MODEL \}\}/g) ?? []).length, 4);
-assert.equal((workflowSource.match(/EFFORT: \$\{\{ env\.REVIEW_EFFORT \}\}/g) ?? []).length, 4);
+assert.equal((workflowSource.match(/MODEL: \$\{\{ env\.REVIEW_MODEL \}\}/g) ?? []).length, 5);
+assert.equal((workflowSource.match(/EFFORT: \$\{\{ env\.REVIEW_EFFORT \}\}/g) ?? []).length, 5);
 const dispatchSource = fs.readFileSync(
   path.join(path.dirname(new URL(import.meta.url).pathname), "..", "..", "workflows", "openai-pr-review-dispatch.yml"),
   "utf8",
@@ -1646,8 +1647,30 @@ fs.writeFileSync(outputFile, JSON.stringify(result));
     const nextHome = path.join(scenario, "home");
     fs.mkdirSync(scenario);
     assert.equal(spawnSync("git", ["clone", "-q", repo, nextRepo]).status, 0);
-    fs.cpSync(state, nextState, { recursive: true });
-    fs.cpSync(codexHome, nextHome, { recursive: true });
+    // Exercise the actual Artifact authentication/restore boundary into a new
+    // runner's paths, rather than copying live state directly into the runner.
+    const snapshot = path.join(scenario, "snapshot");
+    fs.mkdirSync(snapshot);
+    fs.cpSync(state, path.join(snapshot, "state"), { recursive: true });
+    const previousSession = findSession(codexHome, "019f0000-0000-7000-8000-000000000001");
+    fs.copyFileSync(previousSession.file, path.join(snapshot, "session.jsonl"));
+    const expected = { repository_id: "1", pull_request: "2", session_key: "repo:1:pr:2:v2",
+      source_run_id: "100", model: recoveryEnv.MODEL, effort: recoveryEnv.EFFORT,
+      codex_version: "0.163.0" };
+    fs.writeFileSync(path.join(snapshot, "manifest.json"), JSON.stringify({
+      ...expected, schema_version: 2, source_run_attempt: 1,
+      session_id: previousSession.id,
+      session_relative_path: path.relative(codexHome, previousSession.file),
+      session_sha256: sha256(fs.readFileSync(previousSession.file)),
+      state_sha256: treeHash(path.join(snapshot, "state")),
+    }));
+    const key = "fixture-snapshot-authentication-key";
+    signSnapshot(snapshot, key);
+    const restored = restoreSnapshot({ directory: snapshot, codexHome: nextHome,
+      stateDir: nextState, key, expected, artifactId: "700" });
+    assert.equal(restored.resumed, true, restored.reason);
+    assert.equal(restored.session_id, previousSession.id);
+    assert.equal(restored.previous_artifact_id, "700");
     const nextGit = (...args) => {
       const result = spawnSync("git", args, { cwd: nextRepo, encoding: "utf8" });
       assert.equal(result.status, 0, result.stderr);
