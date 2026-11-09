@@ -375,6 +375,8 @@ and all three fixed Checks are attached to the new head. A subsequent unchanged
 request should reuse completed evidence with zero model tokens. Old snapshots
 remain available until expiry. To identify the restored source, compare the new
 manifest's `previous_artifact_id` with the preceding run's uploaded Artifact ID.
+Also compare the two manifests' `session_id` values and confirm the incremental
+review range starts at the preceding fully reviewed head.
 
 ### Live validation matrix
 
