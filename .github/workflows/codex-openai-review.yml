@@ -4,14 +4,14 @@ on:
   workflow_call:
     inputs:
       model:
-        description: Deprecated compatibility input; the shared reviewer always uses gpt-6.1-sol.
+        description: Deprecated compatibility input; the shared reviewer always uses gpt-6.1-terra.
         required: false
-        default: gpt-6.1-sol
+        default: gpt-6.1-terra
         type: string
       effort:
-        description: Deprecated compatibility input; the shared reviewer always uses max reasoning effort.
+        description: Deprecated compatibility input; the shared reviewer always uses xhigh reasoning effort.
         required: false
-        default: max
+        default: xhigh
         type: string
       codex-version:
         description: Exact Codex CLI version used so persisted sessions remain compatible.
@@ -386,8 +386,8 @@ jobs:
           || (steps.evaluate_readiness.outcome == 'failure' && 'Could not produce structured PR readiness evidence.')
           || '' }}
     env:
-      REVIEW_MODEL: gpt-6.1-sol
-      REVIEW_EFFORT: max
+      REVIEW_MODEL: gpt-6.1-terra
+      REVIEW_EFFORT: xhigh
       REVIEW_MAX_DIFF_BYTES: '100000000'
       REVIEW_AUTOMATIC_MAX_DIFF_BYTES: '5000000'
       PULL_REQUEST_NUMBER: ${{ needs.resolve.outputs.number }}
@@ -984,8 +984,8 @@ jobs:
       issues: read
       pull-requests: write
     env:
-      REVIEW_MODEL: gpt-6.1-sol
-      REVIEW_EFFORT: max
+      REVIEW_MODEL: gpt-6.1-terra
+      REVIEW_EFFORT: xhigh
     outputs:
       failure_reason: >-
         ${{ (steps.verify_identity.outcome == 'failure'

@@ -71,8 +71,8 @@ const server = http.createServer(async (request, response) => {
 await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
 const cli = ["codex"];
 const config = [
-  'model="gpt-6.1-sol"',
-  'model_reasoning_effort="max"',
+  'model="gpt-6.1-terra"',
+  'model_reasoning_effort="xhigh"',
   'model_provider="fixture"',
   'model_providers.fixture.name="Local review fixture"',
   `model_providers.fixture.base_url="http://127.0.0.1:${server.address().port}/v1"`,
@@ -115,7 +115,7 @@ try {
     'process.stdout.write(JSON.stringify(runNativeReview(JSON.parse(input))));',
   ].join("\n"));
   const initial = await invoke([nativeRunner], firstHome, JSON.stringify({
-    codexHome: firstHome, repositoryDir: repo, model: "gpt-6.1-sol", effort: "max",
+    codexHome: firstHome, repositoryDir: repo, model: "gpt-6.1-terra", effort: "xhigh",
     key: "fixture:native", mode: "full", paths: ["sample.txt"],
     prompt: "Review the supplied code fixture. Return the native review JSON format with COMPLETED: at the start of overall_explanation.",
   }), [process.execPath]);
@@ -139,7 +139,7 @@ try {
   assert.equal(resumed.status, 0, resumed.stderr);
   assert.deepEqual(JSON.parse(fs.readFileSync(outputFile)), stageResult);
   assert.equal(requests.length, 2);
-  assert.ok(requests.every((request) => request.model === "gpt-6.1-sol" && request.reasoning.effort === "max"));
+  assert.ok(requests.every((request) => request.model === "gpt-6.1-terra" && request.reasoning.effort === "xhigh"));
   assert.match(JSON.stringify(requests[0]), /reviewer|reviewing|code review/i);
   assert.match(JSON.stringify(requests[1]), /No issues found in the supplied diff/);
   assert.equal(findSession(restoredHome, session.id).id, session.id);
