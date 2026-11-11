@@ -19,7 +19,7 @@ uses: GizClaw/github-workflows/.github/workflows/codex-openai-review.yml@latest
 It must pass an `OPENAI_API_KEY` Actions secret explicitly. Set
 `review-instructions`, `issue-review-instructions`, and
 `pr-readiness-instructions` in the caller to match the repository's trusted
-policy. The shared reviewer always uses `gpt-6.1-terra` with `xhigh` reasoning
+policy. The shared reviewer always uses `gpt-6.1-sol` with Light (`low`) reasoning
 effort and accepts complete diffs up to 100,000,000 bytes. The legacy `model`,
 `effort`, and `max-diff-bytes` inputs remain accepted for pinned callers but are
 ignored. Existing callers must update their pinned workflow reference to receive
