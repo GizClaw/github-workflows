@@ -345,6 +345,88 @@ for (const [index, body] of scripts.entries()) {
   );
 }
 
+// Run the real publication script: mutable context must not discard completed
+// review results, while the report must still cover the current head commit.
+const publishJob = /^  publish:\n[\s\S]*?(?=^  finalize:)/m.exec(workflowSource)?.[0];
+assert.ok(publishJob, "the publication job must be extractable");
+assert.doesNotMatch(
+  publishJob,
+  /verify_identity|pr-readiness\/verify\.mjs|EXPECTED_SNAPSHOT_SHA256/,
+  "publication must not revalidate the PR/Issue snapshot",
+);
+const publishScript = inlineScripts(publishJob)[0];
+assert.ok(publishScript, "the publication script must be extractable");
+async function publishReview(currentHead, payloadOverrides = {}) {
+  const reviews = [];
+  const failures = [];
+  const outputs = {};
+  const reviewedHead = "b".repeat(40);
+  const env = {
+    REVIEW: JSON.stringify({
+      summary: "Completed review of the collected context.",
+      findings: [{
+        priority: "P2", title: "Keep this finding", body: "An actionable finding.",
+        path: "sample.mjs", line: 4, inline_safe: true,
+      }],
+    }),
+    READINESS_EVIDENCE: JSON.stringify({
+      verdict: "pass", blockers: [], snapshot_sha256: "reviewed-snapshot",
+      stage_verdicts: { pr_review: "pass", issue_review: "pass", code_review: "pass" },
+    }),
+    PULL_REQUEST_NUMBER: "30",
+    PR_HEAD_SHA: reviewedHead,
+    REVIEW_FROM_SHA: "a".repeat(40),
+    REVIEW_MODE: "full",
+    MODEL: "test-model",
+    EFFORT: "xhigh",
+    CHUNK_COUNT: "1",
+    ...payloadOverrides,
+  };
+  await new AsyncFunction("github", "context", "core", "process", publishScript)(
+    {
+      // Issue and thread state may change after collection; publishing must
+      // not fetch or compare that mutable state again.
+      graphql: async () => { throw new Error("Unexpected snapshot revalidation"); },
+      rest: { pulls: {
+        get: async () => ({ data: {
+          head: { sha: currentHead },
+          base: { sha: "c".repeat(40) },
+          title: "ci: Edited while reviewing",
+          body: "Closes #99\n\nUpdated linkage and validation.",
+        } }),
+        createReview: async (review) => { reviews.push(review); },
+      } },
+    },
+    { repo: { owner: "GizClaw", repo: "example" } },
+    {
+      setFailed: (message) => { failures.push(message); },
+      setOutput: (name, value) => { outputs[name] = value; },
+    },
+    { env },
+  );
+  return { reviews, failures, outputs };
+}
+const published = await publishReview("b".repeat(40));
+assert.deepEqual(published.failures, []);
+assert.equal(published.reviews.length, 1);
+assert.equal(published.reviews[0].commit_id, "b".repeat(40));
+assert.match(published.reviews[0].body, /Completed review of the collected context/);
+assert.match(published.reviews[0].body, /reviewed-snapshot/);
+assert.equal(published.reviews[0].comments.length, 1);
+assert.match(published.reviews[0].comments[0].body, /Keep this finding/);
+const changedHeadPublication = await publishReview("d".repeat(40));
+assert.equal(changedHeadPublication.reviews.length, 0);
+assert.match(changedHeadPublication.outputs.failure_reason, /head changed/);
+assert.deepEqual(changedHeadPublication.failures, [changedHeadPublication.outputs.failure_reason]);
+for (const name of ["REVIEW", "READINESS_EVIDENCE"]) {
+  for (const value of ["", "{"]) {
+    const invalid = await publishReview("b".repeat(40), { [name]: value });
+    assert.equal(invalid.reviews.length, 0);
+    assert.equal(invalid.failures.length, 1);
+    assert.match(invalid.outputs.failure_reason, new RegExp(name));
+  }
+}
+
 // Run the real discussion script against synthetic comments so the selection
 // and clipping rules are executed, not just pattern-matched.
 const discussionScript = scripts.find(

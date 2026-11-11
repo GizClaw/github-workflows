@@ -291,9 +291,12 @@ Review threads are collected across all GraphQL pages before counting unresolved
 actionable findings. A failed page request or a missing or repeated continuation
 cursor fails context collection closed; having more than 100 historical threads
 alone is not a readiness blocker.
-The publication-time verifier also enumerates every page before comparing the
-readiness snapshot. It rejects base/head changes between pages and preserves
-the final snapshot comparison, including unresolved findings on later pages.
+Completed reviews are published using the context collected for that run. Changes
+to PR metadata, closing-Issue linkage, Issue plans or relationships, review
+threads, or the base branch during review do not block publication. The report
+remains attached to the reviewed head commit; publication still rejects a changed
+PR head so results are not presented as covering unreviewed code. A subsequent
+review request collects the updated context.
 
 The reviewer reads every Issue the body closes, up to 100 distinct references,
 in one GraphQL request. It fails closed when the body names more, rather than

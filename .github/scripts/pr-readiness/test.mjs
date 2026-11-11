@@ -2,9 +2,7 @@
 
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
 import {
   CLOSING_ISSUE_LIMIT,
   closingIssueReferences,
@@ -98,10 +96,6 @@ const manyLinkedIssuesInput = {
   linked_issue_count: manyLinkedIssues.length,
 };
 const scriptDirectory = path.dirname(new URL(import.meta.url).pathname);
-const verifySource = fs.readFileSync(
-  path.join(scriptDirectory, "verify.mjs"),
-  "utf8",
-);
 const workflowSource = fs.readFileSync(
   path.join(scriptDirectory, "..", "..", "workflows", "codex-openai-review.yml"),
   "utf8",
@@ -110,13 +104,11 @@ const closingIssuesSource = fs.readFileSync(
   path.join(scriptDirectory, "closing-issues.mjs"),
   "utf8",
 );
-// Both collectors read the Issues the body closes through the shared module
+// Context collection reads the Issues the body closes through the shared module
 // and never GitHub's Development links.
-for (const source of [verifySource, workflowSource]) {
-  assert.match(source, /collectClosingIssues\(/);
-  assert.doesNotMatch(source, /closingIssuesReferences/);
-  assert.doesNotMatch(source, /closedByPullRequestsReferences/);
-}
+assert.match(workflowSource, /collectClosingIssues\(/);
+assert.doesNotMatch(workflowSource, /closingIssuesReferences/);
+assert.doesNotMatch(workflowSource, /closedByPullRequestsReferences/);
 assert.match(closingIssuesSource, /subIssues\(first: 100\)/);
 assert.match(closingIssuesSource, /blockedBy\(first: 100\)/);
 assert.match(closingIssuesSource, /blocking\(first: 100\)/);
@@ -128,13 +120,13 @@ assert.match(
   closingIssuesSource,
   /blocking_count:\s*issue\.blocking\.totalCount/,
 );
-// The reusable reviewer and the verifier both check out the module's
-// dependency on the request parser's quoted-text stripping.
+// The reviewer checks out the module's dependency on the request parser's
+// quoted-text stripping.
 assert.equal(
   workflowSource.match(
     /\.github\/scripts\/pr-readiness\n\s+(?:\.github\/scripts\/pr-review\n\s+)?\.github\/scripts\/review-request\n/g,
   )?.length,
-  2,
+  1,
 );
 
 const references = (body) => closingIssueReferences(body, "GizClaw/example")
@@ -739,197 +731,5 @@ assert.deepEqual(
     "code-review",
   ]),
 );
-
-const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "pr-readiness-test-"));
-try {
-  const fixtureFile = path.join(temporary, "graphql.json");
-  const outputFile = path.join(temporary, "github-output");
-  const fixture = {
-    repository: {
-      nameWithOwner: input.repository,
-      pullRequest: {
-        title: input.title,
-        body: input.body,
-        baseRefOid: input.base_sha,
-        headRefOid: input.head_sha,
-        reviewThreads: {
-          pageInfo: { hasNextPage: false },
-          nodes: [],
-        },
-      },
-    },
-    issues: {
-      [`${input.repository}#10`]: graphqlIssue(input.linked_issues[0]),
-    },
-  };
-  fs.writeFileSync(fixtureFile, JSON.stringify(fixture));
-  const verify = (expected, network = false) => spawnSync(process.execPath, [
-    ...(network ? ['--import', path.join(temporary, 'fetch.mjs')] : []),
-    path.join(path.dirname(new URL(import.meta.url).pathname), "verify.mjs"),
-  ], {
-    encoding: "utf8",
-    env: {
-      ...process.env,
-      GITHUB_REPOSITORY: input.repository,
-      PULL_REQUEST_NUMBER: String(input.number),
-      PR_READINESS_VERIFY_INPUT_FILE: network ? '' : fixtureFile,
-      GITHUB_TOKEN: 'test-token',
-      EXPECTED_SNAPSHOT_SHA256: expected,
-      GITHUB_OUTPUT: outputFile,
-    },
-  });
-  assert.equal(verify(context.readiness.snapshot_sha256).status, 0);
-  const resolved = { isResolved: true, comments: { nodes: [] } };
-  const pageOne = structuredClone(fixture);
-  pageOne.repository.pullRequest.reviewThreads = {
-    nodes: Array(100).fill(resolved),
-    pageInfo: { hasNextPage: true, endCursor: 'first' },
-  };
-  const pageTwo = structuredClone(fixture);
-  pageTwo.repository.pullRequest.reviewThreads = {
-    nodes: Array(5).fill(resolved),
-    pageInfo: { hasNextPage: false, endCursor: 'last' },
-  };
-  function mockPages(second, httpStatus = 200) {
-    fs.writeFileSync(path.join(temporary, 'fetch.mjs'), `
-      import assert from 'node:assert/strict';
-      let call = 0;
-      globalThis.fetch = async (_url, options) => {
-        const request = JSON.parse(options.body);
-        // The closing Issues are read once, after every thread page.
-        if (/^query \\{ i0: repository/.test(request.query)) {
-          assert.ok(call >= 2);
-          return { ok: true, status: 200, json: async () => ({
-            data: { i0: { issue: ${JSON.stringify(fixture.issues[`${input.repository}#10`])} } },
-          }) };
-        }
-        assert.match(request.query, /after: \\$after/);
-        assert.equal(request.variables.after, call === 0 ? null : 'first');
-        const first = call++ === 0;
-        return { ok: first || ${httpStatus} === 200, status: ${httpStatus},
-          json: async () => ({data: first ? ${JSON.stringify(pageOne)} : ${JSON.stringify(second)}}) };
-      };
-    `);
-  }
-  mockPages(pageTwo);
-  assert.equal(verify(context.readiness.snapshot_sha256, true).status, 0);
-  const findingPage = structuredClone(pageTwo);
-  findingPage.repository.pullRequest.reviewThreads.nodes.push({
-    isResolved: false, comments: { nodes: [{author: {login: 'github-actions[bot]'},
-      body: 'Badge](https://img.shields.io/badge/P1-orange)'}] },
-  });
-  mockPages(findingPage);
-  assert.notEqual(verify(context.readiness.snapshot_sha256, true).status, 0);
-  mockPages(pageTwo, 503);
-  assert.match(verify(context.readiness.snapshot_sha256, true).stderr, /HTTP 503/);
-  mockPages(pageOne);
-  assert.match(verify(context.readiness.snapshot_sha256, true).stderr, /pagination did not advance/);
-  const missingCursor = structuredClone(pageOne);
-  missingCursor.repository.pullRequest.reviewThreads.pageInfo.endCursor = null;
-  mockPages(missingCursor);
-  assert.match(verify(context.readiness.snapshot_sha256, true).stderr, /pagination did not advance/);
-  const changedHead = structuredClone(pageTwo);
-  changedHead.repository.pullRequest.headRefOid = 'f'.repeat(40);
-  mockPages(changedHead);
-  assert.match(verify(context.readiness.snapshot_sha256, true).stderr, /changed during review thread pagination/);
-  assert.match(
-    fs.readFileSync(outputFile, "utf8"),
-    new RegExp(context.readiness.snapshot_sha256),
-  );
-
-  const manyFixture = structuredClone(fixture);
-  manyFixture.repository.pullRequest.body = manyLinkedIssuesInput.body;
-  manyFixture.issues = Object.fromEntries(manyLinkedIssues.map((issue) => [
-    `${issue.repository}#${issue.number}`,
-    graphqlIssue(issue),
-  ]));
-  fs.writeFileSync(fixtureFile, JSON.stringify(manyFixture));
-  const manyReadiness = analyzePullRequest(manyLinkedIssuesInput);
-  const manyResult = verify(manyReadiness.snapshot_sha256);
-  assert.equal(manyResult.status, 0, manyResult.stderr);
-  fs.writeFileSync(fixtureFile, JSON.stringify(fixture));
-
-  const assertStale = (mutate) => {
-    const staleFixture = structuredClone(fixture);
-    mutate(
-      staleFixture.repository.pullRequest,
-      staleFixture.issues[`${input.repository}#10`],
-    );
-    fs.writeFileSync(fixtureFile, JSON.stringify(staleFixture));
-    const result = verify(context.readiness.snapshot_sha256);
-    assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /changed while readiness review was running/);
-  };
-  assertStale((pullRequest) => {
-    pullRequest.title = "ci: Changed title";
-  });
-  assertStale((pullRequest) => {
-    pullRequest.body = `${input.body}\nchanged`;
-  });
-  assertStale((pullRequest) => {
-    pullRequest.baseRefOid = "c".repeat(40);
-  });
-  assertStale((pullRequest) => {
-    pullRequest.headRefOid = "c".repeat(40);
-  });
-  // Dropping the closing keyword or naming another Issue changes the linkage.
-  assertStale((pullRequest) => {
-    pullRequest.body = input.body.replace("Closes #10", "Related to #10");
-  });
-  assertStale((pullRequest) => {
-    pullRequest.body = input.body.replace("Closes #10", "Closes #12");
-  });
-  assertStale((_pullRequest, issue) => {
-    issue.body = `${issueBody}\nchanged`;
-  });
-  assertStale((_pullRequest, issue) => {
-    issue.subIssues = {
-      totalCount: 1,
-      nodes: [{
-        repository: { nameWithOwner: input.repository },
-        number: 20,
-        state: "OPEN",
-      }],
-    };
-  });
-  assertStale((_pullRequest, issue) => {
-    issue.blockedBy.nodes[0].state = "CLOSED";
-  });
-  assertStale((_pullRequest, issue) => {
-    issue.blocking.totalCount += 1;
-  });
-  assertStale((pullRequest) => {
-    pullRequest.reviewThreads.nodes.push({
-      isResolved: false,
-      comments: {
-        nodes: [{
-          author: { login: "github-actions[bot]" },
-          body: "![P1 Badge](https://img.shields.io/badge/P1-orange)",
-        }],
-      },
-    });
-  });
-
-  fs.writeFileSync(fixtureFile, JSON.stringify({
-    errors: [{ message: "rate limit exceeded" }],
-  }));
-  const apiFailure = verify(context.readiness.snapshot_sha256);
-  assert.notEqual(apiFailure.status, 0);
-  assert.match(apiFailure.stderr, /GitHub GraphQL failed: rate limit exceeded/);
-
-  fs.writeFileSync(fixtureFile, "{");
-  assert.notEqual(verify(context.readiness.snapshot_sha256).status, 0);
-
-  fs.writeFileSync(fixtureFile, JSON.stringify({ repository: {} }));
-  const missingEvidence = verify(context.readiness.snapshot_sha256);
-  assert.notEqual(missingEvidence.status, 0);
-  assert.match(missingEvidence.stderr, /Pull request was not found/);
-
-  fixture.repository.pullRequest.body = `${input.body}\nchanged`;
-  fs.writeFileSync(fixtureFile, JSON.stringify(fixture));
-  assert.notEqual(verify(context.readiness.snapshot_sha256).status, 0);
-} finally {
-  fs.rmSync(temporary, { recursive: true, force: true });
-}
 
 process.stdout.write("pr-readiness tests passed\n");
