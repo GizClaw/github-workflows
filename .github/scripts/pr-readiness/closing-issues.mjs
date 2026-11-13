@@ -67,6 +67,7 @@ const ISSUE_FIELDS = `
   number
   title
   body
+  updatedAt
   state
   issueType { name }
   parent { number }
@@ -139,6 +140,7 @@ function normalizeIssue(issue) {
   return {
     repository: issue.repository.nameWithOwner,
     number: issue.number,
+    updated_at: issue.updatedAt,
     title: clip(issue.title, 500),
     body: clip(issue.body, 80_000),
     body_truncated: String(issue.body ?? "").length > 80_000,

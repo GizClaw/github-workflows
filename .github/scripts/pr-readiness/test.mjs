@@ -106,7 +106,8 @@ const closingIssuesSource = fs.readFileSync(
 );
 // Context collection reads the Issues the body closes through the shared module
 // and never GitHub's Development links.
-assert.match(workflowSource, /collectClosingIssues\(/);
+assert.match(workflowSource, /collectDiscussion\(/);
+assert.match(fs.readFileSync(path.join(scriptDirectory, "collect.mjs"), "utf8"), /collectClosingIssues\(/);
 assert.doesNotMatch(workflowSource, /closingIssuesReferences/);
 assert.doesNotMatch(workflowSource, /closedByPullRequestsReferences/);
 assert.match(closingIssuesSource, /subIssues\(first: 100\)/);

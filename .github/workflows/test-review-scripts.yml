@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - .github/scripts/**
+      - .github/actions/review-gate/**
       - .github/workflows/test-review-scripts.yml
       - .github/workflows/openai-pr-review-dispatch.yml
       - .github/workflows/codex-openai-review.yml
@@ -11,6 +12,7 @@ on:
     branches: [main]
     paths:
       - .github/scripts/**
+      - .github/actions/review-gate/**
       - .github/workflows/test-review-scripts.yml
       - .github/workflows/openai-pr-review-dispatch.yml
       - .github/workflows/codex-openai-review.yml
@@ -43,3 +45,4 @@ jobs:
           node .github/scripts/review-request/test.mjs
           node .github/scripts/review-request/dispatch-test.mjs
           node .github/scripts/review-request/dispatch-fence-test.mjs
+          node --test .github/scripts/review-gate/test.mjs
