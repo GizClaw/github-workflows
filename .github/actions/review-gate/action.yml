@@ -1,0 +1,37 @@
+name: Authenticated native OpenAI review gate
+description: Verify the latest trusted review admission and terminal receipt without secrets or PR checkout.
+inputs:
+  stage:
+    description: Review stage (pr, issue, or code).
+    required: true
+  github-token:
+    description: Read-only token with actions, contents, issues, pull-requests and checks read.
+    required: true
+  review-workflow:
+    description: Trusted default-branch caller workflow filename (for example codex-review.yml).
+    required: true
+  wait-minutes:
+    description: Maximum time to wait for admission and source completion (up to 60 minutes).
+    default: '30'
+runs:
+  using: composite
+  steps:
+    - uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+      env:
+        REVIEW_GATE_ACTION_PATH: ${{ github.action_path }}
+        REVIEW_GATE_STAGE: ${{ inputs.stage }}
+        REVIEW_GATE_WORKFLOW: ${{ inputs.review-workflow }}
+        REVIEW_GATE_WAIT: ${{ inputs.wait-minutes }}
+      with:
+        github-token: ${{ inputs.github-token }}
+        script: |
+          const { pathToFileURL } = require('node:url');
+          const { resolve } = require('node:path');
+          const { waitForReview } = await import(pathToFileURL(resolve(
+            process.env.REVIEW_GATE_ACTION_PATH, '../../scripts/review-gate/verify.mjs',
+          )).href);
+          await waitForReview({
+            github, context, core, stage: process.env.REVIEW_GATE_STAGE,
+            reviewWorkflow: process.env.REVIEW_GATE_WORKFLOW,
+            waitMinutes: process.env.REVIEW_GATE_WAIT,
+          });

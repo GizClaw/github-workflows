@@ -112,16 +112,14 @@ rejected in every repository.
   worker. Approval is never copied into the automatic request: the original
   comment resolver still verifies admin permission and exact-head approval.
   Source lookup or comment pagination errors fail closed.
-- Only the three explicit OpenAI checks carry the review verdict on the PR
-  head. Native worker jobs belong to default-branch executions, including
-  failures and cancellations, so a later successful comment retry can replace
-  the verdict without leaving an obsolete native review failure on the PR.
-  Configure these three checks as merge requirements, not native worker jobs.
-  This requires copying the updated caller into the consuming repository's
-  default branch; updating `latest` alone cannot change a caller's triggers
-  or concurrency. Publish the shared resolver's `dispatch_source_run_id`
-  support to `latest` before migrating consumer callers to pass that new input.
-  Existing callers can retain their repository-specific policy.
+- The three custom OpenAI checks display review verdicts on the PR head.
+  GitHub may not recognize custom checks created by default-branch
+  `issue_comment`/`workflow_dispatch` workers as required Actions checks.
+  Consumers needing eligible native required checks can install the secretless
+  `pull_request` gate below, preserving the same three required names and all
+  branch protections. Default-branch native worker jobs are not merge gates.
+  Updating `latest` alone cannot install consumer triggers or concurrency;
+  existing callers can retain their repository-specific policy.
 - Older direct callers may already have a failed native `review / review`
   beside three passing OpenAI checks. GitHub prohibits changing native Actions
   status/conclusion through the Checks API. Refresh those legacy native checks
@@ -344,6 +342,145 @@ not use `secrets: inherit`. Issue events resolve the PRs GitHub lists as closing
 the Issue and invoke
 the same reusable PR reviewer; there is no separate Issue-review dispatcher or
 second workflow.
+
+## Secretless native required-check gate
+
+The trusted reviewer emits two small, 30-day JSON artifacts per accepted PR
+request: an admission before model work, and a terminal receipt after native
+review publication. They contain revision/context/policy bindings and explicit
+stage completion/verdicts, never model transcripts or the API key. No existing
+pre-receipt run can satisfy this protocol; request a fresh review after rollout.
+The reusable reviewer reference remains `@latest`.
+
+Add `native-gate-workflow: codex-review-gates.yml` to **both** trusted caller
+review invocations (direct requests and the linked-Issue matrix). The input
+is optional and defaults to empty; without it no native gate reruns are
+requested. For these legacy callers, receipt preparation, receipt-writer checkout
+and receipt uploads use conditional `continue-on-error`, preserving review and
+publication availability when optional artifact infrastructure fails. Opted-in
+callers require those steps to succeed. Native gates always reject missing
+receipts, even if a legacy source run completed successfully; this tolerance
+never substitutes older evidence or changes model/verdict policy. Keep the
+caller's existing `actions: write` permission: refresh uses
+only the review job's existing permission, after admission upload. An accepted
+same-head comment, manual dispatch or Issue refresh requests a rerun of the most
+recent completed eligible gate run. A gate already queued/running follows the
+latest admission itself. Refresh also runs after admission/upload failure, so
+an older completed gate is re-evaluated. The source reviewer never waits for
+gate completion.
+No reviewer workflow, individual reviewer job, custom conclusion or branch
+protection is rerun or rewritten by this helper.
+
+Install this separate `.github/workflows/codex-review-gates.yml` consumer
+workflow. Replace **all three** `PUBLISHED_SHARED_COMMIT_SHA` placeholders with
+the same immutable 40-character shared-repository commit SHA containing this
+action; do not use `@latest` for the gate action. Set `review-workflow` to the
+exact trusted caller filename (the verifier resolves and checks its workflow ID
+and `.github/workflows/` path).
+
+```yaml
+name: Native review gates
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, edited, ready_for_review]
+permissions:
+  actions: read
+  contents: read
+  issues: read
+  pull-requests: read
+  checks: read
+jobs:
+  pr-review:
+    name: OpenAI PR Review
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: GizClaw/github-workflows/.github/actions/review-gate@PUBLISHED_SHARED_COMMIT_SHA
+        with:
+          stage: pr
+          github-token: ${{ github.token }}
+          review-workflow: codex-review.yml
+  issue-review:
+    name: OpenAI Issue Review
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: GizClaw/github-workflows/.github/actions/review-gate@PUBLISHED_SHARED_COMMIT_SHA
+        with:
+          stage: issue
+          github-token: ${{ github.token }}
+          review-workflow: codex-review.yml
+  code-review:
+    name: OpenAI Code Review
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: GizClaw/github-workflows/.github/actions/review-gate@PUBLISHED_SHARED_COMMIT_SHA
+        with:
+          stage: code
+          github-token: ${{ github.token }}
+          review-workflow: codex-review.yml
+```
+
+These are three real native jobs, each requiring its own explicit completed,
+passing stage and successful native review publication/source run. There is no
+checkout, PR execution, model key, dependency installation or write token in
+the gate. Do not add draft/metadata conditionals that skip required jobs; a draft,
+closed, stale or unreviewed PR fails closed. `wait-minutes` defaults to 30
+(positive values up to 60); increase the job timeout to leave overhead when
+changing it. Rerunning a gate retains its original `pull_request` event: an old
+head after a push fails, and a new PR event must create gates for the new head.
+Fork runs without an unambiguous API PR association are not automatically
+rerun; request a new PR event if needed. No gate run yet means there is nothing
+to refresh.
+
+Authentication uses API-owned artifact/run metadata, not artifact names,
+claimed IDs, custom check names or `external_id`. The source must be a first
+attempt `issue_comment`, `workflow_dispatch` or `issues` run of the exact trusted
+caller workflow, with both repository IDs matching the consumer, on its default
+branch at an immutable revision still in that branch's history. Its caller
+workflow blob must match the current default-branch caller. The run's
+`referenced_workflows` must include exactly
+`GizClaw/github-workflows/.github/workflows/codex-openai-review.yml@latest`, with
+its resolved SHA equal to the receipt's reviewer revision. Artifacts originating
+in the gate workflow cannot be selected as source receipts. Keep this trusted
+caller isolated: artifact metadata authenticates a **run**, not an individual
+uploading job. Every job in that caller must be trusted, with no PR-head code
+execution, mutable third-party actions or untrusted artifact producers. Use
+literal trusted review-policy inputs; dynamic policy from mutable variables or
+external services is outside this contract and requires a fresh request when
+changed. Repository policy is additionally bound to the exact reviewed base.
+
+The newest authenticated admission by artifact upload ID wins, after queue
+acquisition, even if its original request/run ID is older. A pending, failed,
+expired, malformed or cancelled latest admission cannot reuse an earlier pass.
+The terminal binds that exact admission ID/hash and source identity. An
+API-owned native source-job marker binds the PR/head and is also recorded in the
+receipt. Custom check IDs only discover candidate source runs: the verifier
+corroborates their native job metadata against the trusted workflow run. A newer
+accepted job with failed admission upload blocks older evidence, even when its
+original request/run ID is older. Artifact upload failure never permits a prior
+pass to satisfy a rerun gate. The gate
+recomputes the existing canonical readiness normalization with shared API
+collection: current PR title/body, closing Issues (including native relationships
+and update revisions), all review-thread pages/metadata, base/head, and policy
+fingerprint. The receipt preserves the existing readiness policy composition:
+Issue-review instructions, one joining space, then PR-readiness instructions.
+Full live thread metadata is used only for the gate fingerprint and removed
+before writing the model context file; existing clipped discussion budgets and
+thread-count inputs remain unchanged. Stale context requires a fresh review. Review publication retains
+its previous snapshot behavior; gates independently enforce live freshness after
+publication. Missing/ambiguous receipts, skipped stages, API errors, incomplete
+pagination and bounded archive violations all fail closed. The reader accepts
+only one bounded `receipt.json` ZIP member, in isolated Python, without
+extracting any paths or importing artifact code. Receipt expiry/deletion removes
+evidence and requires a new review; it never grants a pass.
+
+Run the protocol regression tests without dependencies or model calls:
+
+```sh
+node --test .github/scripts/review-gate/test.mjs
+```
 
 ## Rollout
 

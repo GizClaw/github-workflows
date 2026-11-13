@@ -58,6 +58,11 @@ on:
         required: false
         default: ''
         type: string
+      native-gate-workflow:
+        description: Optional secretless pull_request gate workflow filename to refresh after admission.
+        required: false
+        default: ''
+        type: string
       base_sha:
         description: Reserved for callers that already resolved a pull request.
         required: false
@@ -342,6 +347,7 @@ jobs:
             }
 
   review:
+    name: Review admission PR-${{ needs.resolve.outputs.number }} head-${{ needs.resolve.outputs.head_sha }}
     needs: [resolve, start]
     if: github.run_attempt == 1 && needs.resolve.outputs.eligible == 'true'
     runs-on: ubuntu-latest
@@ -351,6 +357,9 @@ jobs:
       issues: read
       pull-requests: read
     outputs:
+      admission: ${{ steps.admission.outputs.receipt }}
+      admission_artifact_id: ${{ steps.upload_admission.outputs.artifact-id }}
+      gate_context: ${{ steps.context.outputs.gate_context }}
       review: ${{ steps.run_review.outputs.review }}
       readiness_verdict: ${{ steps.evaluate_readiness.outputs.verdict }}
       readiness_evidence: ${{ steps.evaluate_readiness.outputs.evidence }}
@@ -386,6 +395,12 @@ jobs:
           || (steps.evaluate_readiness.outcome == 'failure' && 'Could not produce structured PR readiness evidence.')
           || '' }}
     env:
+      REVIEW_INSTRUCTIONS: ${{ inputs.review-instructions }}
+      ISSUE_REVIEW_INSTRUCTIONS: ${{ inputs.issue-review-instructions }}
+      PR_READINESS_INSTRUCTIONS: ${{ inputs.pr-readiness-instructions }}
+      CODEX_VERSION: ${{ inputs.codex-version }}
+      LFS_CONTEXT_PATHS: ${{ inputs.lfs-context-paths }}
+      REPOSITORY_ID: ${{ github.repository_id }}
       REVIEW_MODEL: gpt-6.1-sol
       REVIEW_EFFORT: low
       REVIEW_MAX_DIFF_BYTES: '100000000'
@@ -427,8 +442,54 @@ jobs:
             .github/scripts/pr-readiness
             .github/scripts/pr-review
             .github/scripts/review-request
+            .github/scripts/review-gate
             .github/workflows
           persist-credentials: false
+
+      - name: Admit the accepted review request before model work
+        continue-on-error: ${{ inputs.native-gate-workflow == '' }}
+        id: admission
+        env:
+          REVIEWER_SOURCE_SHA: ${{ job.workflow_sha }}
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          script: |
+            const { pathToFileURL } = require('node:url');
+            const path = require('node:path');
+            const { makeAdmission, writeReceipt } = await import(pathToFileURL(path.join(
+              process.env.REVIEWER_SOURCE_DIR, '.github/scripts/review-gate/receipts.mjs',
+            )).href);
+            const receipt = await makeAdmission({ github, context });
+            const directory = path.join(process.env.RUNNER_TEMP, 'review-gate-admission');
+            require('node:fs').mkdirSync(directory, { recursive: true });
+            writeReceipt(path.join(directory, 'receipt.json'), receipt);
+            core.setOutput('receipt', JSON.stringify(receipt));
+
+      - name: Upload native gate admission
+        continue-on-error: ${{ inputs.native-gate-workflow == '' }}
+        id: upload_admission
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: review-gate-admission-pr-${{ needs.resolve.outputs.number }}
+          path: ${{ runner.temp }}/review-gate-admission/receipt.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Refresh only the opt-in native gate workflow
+        if: always() && inputs.native-gate-workflow != ''
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          NATIVE_GATE_WORKFLOW: ${{ inputs.native-gate-workflow }}
+        with:
+          script: |
+            const { pathToFileURL } = require('node:url');
+            const { refreshNativeGates } = await import(pathToFileURL(require('node:path').join(
+              process.env.REVIEWER_SOURCE_DIR, '.github/scripts/review-gate/refresh.mjs',
+            )).href);
+            await refreshNativeGates({
+              github, context, gateWorkflow: process.env.NATIVE_GATE_WORKFLOW,
+              number: Number(process.env.PULL_REQUEST_NUMBER), headSha: process.env.PR_HEAD_SHA,
+            });
 
       - name: Fetch exact pull-request objects without checking out its code
         id: fetch_head
@@ -485,147 +546,30 @@ jobs:
         with:
           script: |
             const fs = require('node:fs');
-            const clip = (value, length) => String(value ?? '').slice(0, length);
             try {
-              const data = await github.graphql(`
-                query(
-                  $owner: String!,
-                  $repo: String!,
-                  $number: Int!
-                ) {
-                  repository(owner: $owner, name: $repo) {
-                    nameWithOwner
-                    pullRequest(number: $number) {
-                      title
-                      body
-                      reviewThreads(first: 100) {
-                        pageInfo { hasNextPage endCursor }
-                        nodes {
-                          isResolved
-                          comments(first: 1) {
-                            nodes {
-                              author { login }
-                              body
-                            }
-                          }
-                        }
-                      }
-                    }
-                  }
-                }
-              `, {
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                number: Number(process.env.PULL_REQUEST_NUMBER),
-              });
-              const pullRequest = data.repository.pullRequest;
-              if (!pullRequest) throw new Error('Pull request was not found');
-              // Fetch every page before reporting complete thread evidence.
-              const cursors = new Set();
-              while (pullRequest.reviewThreads.pageInfo.hasNextPage) {
-                const after = pullRequest.reviewThreads.pageInfo.endCursor;
-                if (!after || cursors.has(after)) {
-                  throw new Error('Review thread pagination did not advance');
-                }
-                cursors.add(after);
-                const page = await github.graphql(`
-                  query($owner: String!, $repo: String!, $number: Int!, $after: String!) {
-                    repository(owner: $owner, name: $repo) {
-                      pullRequest(number: $number) {
-                        reviewThreads(first: 100, after: $after) {
-                          pageInfo { hasNextPage endCursor }
-                          nodes {
-                            isResolved
-                            comments(first: 1) { nodes { author { login } body } }
-                          }
-                        }
-                      }
-                    }
-                  }
-                `, {
-                  owner: context.repo.owner, repo: context.repo.repo,
-                  number: Number(process.env.PULL_REQUEST_NUMBER), after,
-                });
-                const threads = page.repository.pullRequest.reviewThreads;
-                pullRequest.reviewThreads.nodes.push(...threads.nodes);
-                pullRequest.reviewThreads.pageInfo = threads.pageInfo;
-              }
-              // The Issues this pull request closes are the ones its body
-              // names with a closing keyword; GitHub's Development links are
-              // not consulted.
-              const { collectClosingIssues, graphqlIssueFetcher } = await import(
+              const { collectDiscussion } = await import(
                 require('node:url').pathToFileURL(require('node:path').join(
-                  process.env.REVIEWER_SOURCE_DIR,
-                  '.github/scripts/pr-readiness/closing-issues.mjs',
+                  process.env.REVIEWER_SOURCE_DIR, '.github/scripts/pr-readiness/collect.mjs',
                 )).href
               );
-              const closing = await collectClosingIssues({
-                repository: data.repository.nameWithOwner,
-                body: pullRequest.body,
-                fetchIssues: graphqlIssueFetcher(async (query) => (
-                  await github.request('POST /graphql', { query })
-                ).data),
+              const discussion = await collectDiscussion({
+                github, context, number: Number(process.env.PULL_REQUEST_NUMBER),
+                triggerCommentId: process.env.REQUEST_COMMENT_ID || '',
               });
-              const comments = await github.paginate(github.rest.issues.listComments, {
-                owner: context.repo.owner, repo: context.repo.repo,
-                issue_number: Number(process.env.PULL_REQUEST_NUMBER), per_page: 100,
-              });
-              // The request keeps its own budget only if it survives the
-              // window, so it is restored when newer comments crowd it out.
-              const triggerCommentId = String(
-                process.env.REQUEST_COMMENT_ID || '',
-              );
-              const recentComments = comments.slice(-20);
-              const triggerComment = triggerCommentId
-                && comments.find(
-                  (comment) => String(comment.id) === triggerCommentId,
-                );
-              const selectedComments = triggerComment
-                && !recentComments.some(
-                  (comment) => String(comment.id) === triggerCommentId,
-                )
-                ? [triggerComment, ...recentComments]
-                : recentComments;
-              const discussion = {
-                repository: data.repository.nameWithOwner,
-                pull_request: {
-                  title: clip(pullRequest.title, 500),
-                  body: clip(pullRequest.body, 80_000),
-                  body_truncated:
-                    String(pullRequest.body ?? '').length > 80_000,
-                },
-                linked_issue_count: closing.linked_issue_count,
-                linked_issues: closing.linked_issues,
-                unresolved_openai_thread_count: pullRequest.reviewThreads.nodes
-                  .filter((thread) => (
-                    !thread.isResolved
-                    && thread.comments.nodes[0]?.author?.login
-                      === 'github-actions[bot]'
-                    && /Badge\]\(https:\/\/img\.shields\.io\/badge\/P[0-3]-/
-                      .test(thread.comments.nodes[0]?.body || '')
-                  ))
-                  .length,
-                review_threads_truncated:
-                  pullRequest.reviewThreads.pageInfo.hasNextPage,
-                trigger_comment_id: process.env.REQUEST_COMMENT_ID || null,
-                comments: selectedComments.map((comment) => {
-                  const isTrigger = String(comment.id) === triggerCommentId;
-                  const limit = isTrigger ? 8_000 : 2_000;
-                  return {
-                    id: String(comment.id),
-                    author: comment.user.login,
-                    author_is_bot: comment.user.type === 'Bot'
-                      || /\[bot\]$/i.test(comment.user.login || ''),
-                    association: comment.author_association,
-                    created_at: comment.created_at,
-                    is_trigger: isTrigger,
-                    body: clip(comment.body, limit),
-                    body_truncated:
-                      String(comment.body ?? '').length > limit,
-                  };
-                }),
-              };
-              fs.writeFileSync(process.env.PR_CONTEXT_FILE, JSON.stringify(discussion), 'utf8');
+              const { gateContext } = await import(require('node:url').pathToFileURL(require('node:path').join(
+                process.env.REVIEWER_SOURCE_DIR, '.github/scripts/pr-readiness/collect.mjs',
+              )).href);
+              const { policyFromEnv } = await import(require('node:url').pathToFileURL(require('node:path').join(
+                process.env.REVIEWER_SOURCE_DIR, '.github/scripts/review-gate/receipts.mjs',
+              )).href);
+              core.setOutput('gate_context', JSON.stringify(gateContext(discussion, {
+                repository: process.env.GITHUB_REPOSITORY, number: Number(process.env.PULL_REQUEST_NUMBER),
+                baseSha: process.env.PR_BASE_SHA, headSha: process.env.PR_HEAD_SHA, policy: policyFromEnv(), requireComplete: false,
+              })));
+              // Full live metadata is gate-only evidence. Preserve the model's
+              // existing clipped discussion and actionable-thread count budget.
+              const { live_metadata: gateOnlyMetadata, ...reviewDiscussion } = discussion;
+              fs.writeFileSync(process.env.PR_CONTEXT_FILE, JSON.stringify(reviewDiscussion), 'utf8');
               core.exportVariable('PR_CONTEXT_FILE', process.env.PR_CONTEXT_FILE);
             } catch (error) {
               const detail = String(error?.message ?? error)
@@ -1332,7 +1276,7 @@ jobs:
             ].filter(Boolean).join('\n\n');
             if (body.length > maxCommentLength) body = `${body.slice(0, maxCommentLength - 16)}\n\n[Truncated]`;
 
-            await github.rest.pulls.createReview({
+            const publication = await github.rest.pulls.createReview({
               owner: context.repo.owner,
               repo: context.repo.repo,
               pull_number: pullNumber,
@@ -1341,6 +1285,52 @@ jobs:
               body,
               comments: inlineFindings,
             });
+            core.setOutput('publication_id', String(publication.data.id));
+
+      - name: Check out trusted terminal receipt writer
+        continue-on-error: ${{ inputs.native-gate-workflow == '' }}
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .review-gate-source
+          sparse-checkout: |
+            .github/scripts
+          persist-credentials: false
+
+      - name: Bind the terminal receipt to successful native publication
+        continue-on-error: ${{ inputs.native-gate-workflow == '' }}
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          ADMISSION: ${{ needs.review.outputs.admission }}
+          ADMISSION_ARTIFACT_ID: ${{ needs.review.outputs.admission_artifact_id }}
+          GATE_CONTEXT: ${{ needs.review.outputs.gate_context }}
+          READINESS: ${{ needs.review.outputs.readiness_evidence }}
+          REVIEW_RESULT: ${{ needs.review.result }}
+          PUBLICATION_ID: ${{ steps.publish.outputs.publication_id }}
+        with:
+          script: |
+            const path = require('node:path');
+            const { makeTerminal, writeReceipt } = await import(require('node:url').pathToFileURL(path.join(
+              process.env.GITHUB_WORKSPACE, '.review-gate-source/.github/scripts/review-gate/receipts.mjs',
+            )).href);
+            const receipt = makeTerminal({
+              admission: JSON.parse(process.env.ADMISSION), admissionArtifactId: process.env.ADMISSION_ARTIFACT_ID,
+              binding: JSON.parse(process.env.GATE_CONTEXT), readiness: JSON.parse(process.env.READINESS),
+              reviewResult: process.env.REVIEW_RESULT, publishResult: 'success', publicationId: process.env.PUBLICATION_ID,
+            });
+            const directory = path.join(process.env.RUNNER_TEMP, 'review-gate-terminal');
+            require('node:fs').mkdirSync(directory, { recursive: true });
+            writeReceipt(path.join(directory, 'receipt.json'), receipt);
+
+      - name: Upload native gate terminal receipt
+        continue-on-error: ${{ inputs.native-gate-workflow == '' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: review-gate-terminal-pr-${{ needs.resolve.outputs.number }}
+          path: ${{ runner.temp }}/review-gate-terminal/receipt.json
+          if-no-files-found: error
+          retention-days: 30
 
   finalize:
     needs: [resolve, start, review, publish]

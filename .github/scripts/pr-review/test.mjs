@@ -394,7 +394,7 @@ async function publishReview(currentHead, payloadOverrides = {}) {
           title: "ci: Edited while reviewing",
           body: "Closes #99\n\nUpdated linkage and validation.",
         } }),
-        createReview: async (review) => { reviews.push(review); },
+        createReview: async (review) => { reviews.push(review); return { data: { id: 1234 } }; },
       } },
     },
     { repo: { owner: "GizClaw", repo: "example" } },
@@ -430,7 +430,7 @@ for (const name of ["REVIEW", "READINESS_EVIDENCE"]) {
 // Run the real discussion script against synthetic comments so the selection
 // and clipping rules are executed, not just pattern-matched.
 const discussionScript = scripts.find(
-  (body) => body.includes("comments: selectedComments.map("),
+  (body) => body.includes("const discussion = await collectDiscussion("),
 );
 assert.ok(discussionScript, "the discussion step must select comments");
 async function collectDiscussion({ comments = [], triggerCommentId = '', pages, expectedFailure = '', body = 'Body', issues }) {
@@ -510,13 +510,14 @@ async function collectDiscussion({ comments = [], triggerCommentId = '', pages, 
   assert.equal(failure, "", "the discussion step must not fail");
   return JSON.parse(fs.readFileSync(contextFile, "utf8"));
 }
-const resolvedThread = { isResolved: true, comments: { nodes: [] } };
+const resolvedThread = { id: "resolved-thread", isResolved: true, comments: { nodes: [] } };
 const threadPage = (nodes, endCursor, hasNextPage) => ({ nodes, pageInfo: { endCursor, hasNextPage } });
 const firstThreadPage = threadPage(Array(100).fill(resolvedThread), 'page1', true);
 const allResolved = await collectDiscussion({ pages: [firstThreadPage, threadPage(Array(5).fill(resolvedThread), 'page2', false)] });
 assert.equal(allResolved.review_threads_truncated, false);
 assert.equal(allResolved.unresolved_openai_thread_count, 0);
-const unresolvedThread = { isResolved: false, comments: { nodes: [{ author: { login: 'github-actions[bot]' }, body: 'Badge](https://img.shields.io/badge/P1-orange)' }] } };
+assert.equal(Object.hasOwn(allResolved, "live_metadata"), false);
+const unresolvedThread = { id: "unresolved-thread", isResolved: false, comments: { nodes: [{ author: { login: 'github-actions[bot]' }, body: 'Badge](https://img.shields.io/badge/P1-orange)' }] } };
 const laterFinding = await collectDiscussion({ pages: [firstThreadPage, threadPage([unresolvedThread], 'page2', false)] });
 assert.equal(laterFinding.unresolved_openai_thread_count, 1);
 await collectDiscussion({ pages: [firstThreadPage, new Error('page fetch failed')], expectedFailure: 'page fetch failed' });
