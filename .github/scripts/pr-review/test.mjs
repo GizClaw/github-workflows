@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import {
@@ -25,6 +25,7 @@ import {
   totalMetrics,
 } from "./stages.mjs";
 import { readNativeReview } from "./native.mjs";
+import { collectActionSources } from "./action-sources.mjs";
 import { restoreSnapshot, signSnapshot } from "./session-artifacts.mjs";
 import { analyzePullRequest, evaluateReadiness } from "../pr-readiness/common.mjs";
 
@@ -1152,6 +1153,11 @@ if (native) {
     if (!prompt.includes(process.env.FAKE_LFS_CONTEXT)) throw new Error("Native review is missing its LFS manifest");
     if (JSON.parse(fs.readFileSync(process.env.FAKE_LFS_CONTEXT)).version !== 1) throw new Error("Unreadable LFS manifest");
   }
+  if (process.env.FAKE_ACTION_SOURCE) {
+    if (!prompt.includes(process.env.FAKE_ACTION_SOURCE)) throw new Error("Native review is missing exact action source evidence");
+    const evidence = JSON.parse(fs.readFileSync(process.env.FAKE_ACTION_SOURCE));
+    for (const snapshot of evidence.snapshots) for (const file of snapshot.files) fs.readFileSync(path.join(path.dirname(process.env.FAKE_ACTION_SOURCE), file.relative_path));
+  }
   const contextPath = prompt.match(/^Read the untrusted pull-request context from (.+)\\.$/m)?.[1];
   if (!contextPath) throw new Error("Native review did not receive its PR context input");
   const reviewContext = JSON.parse(fs.readFileSync(contextPath, "utf8"));
@@ -1223,6 +1229,41 @@ fs.writeFileSync(outputFile, JSON.stringify(result));
     ISSUE_REVIEW_INSTRUCTIONS: "Review the Issue.",
     PR_REVIEW_INSTRUCTIONS: "Review PR readiness.",
   };
+  // Exact action sources must reach native and resumed code turns, invalidate
+  // old chunk checkpoints when their evidence identity changes, and fail before
+  // any model work when source bytes are corrupted.
+  {
+    const scenario = path.join(temporary, "action-source-context");
+    const scenarioState = path.join(scenario, "state");
+    fs.mkdirSync(scenario, { recursive: true }); fs.cpSync(state, scenarioState, { recursive: true });
+    const objectHash = (kind, bytes) => createHash("sha1").update(`${kind} ${bytes.length}\0`).update(bytes).digest("hex");
+    const bytes = Buffer.from("runs:\n  using: node24\n  main: action.yml\n");
+    const blobSha = objectHash("blob", bytes);
+    const treeSha = objectHash("tree", Buffer.concat([Buffer.from("100644 action.yml\0"), Buffer.from(blobSha, "hex")]));
+    const github = { rest: { repos: { get: async () => ({ data: { id: 1, private: false, full_name: "fixture/action" } }) }, git: {
+      getCommit: async ({ commit_sha }) => ({ data: { sha: commit_sha, tree: { sha: treeSha } } }),
+      getTree: async () => ({ data: { sha: treeSha, truncated: false, tree: [{ path: "action.yml", mode: "100644", type: "blob", sha: blobSha, size: bytes.length }] } }),
+      getBlob: async () => ({ data: { sha: blobSha, encoding: "base64", size: bytes.length, content: bytes.toString("base64") } }),
+    } } };
+    const acquire = suffix => collectActionSources({ github, directory: path.join(scenario, `sources-${suffix}`), base: latestGeneration.merge_base_sha, head: latestGeneration.to_sha, refs: [`fixture/action@${suffix.repeat(40)}`] });
+    const manifest = await acquire("d");
+    const env = { ...recoveryEnv, PR_REVIEW_STATE_DIR: scenarioState, CODEX_HOME: path.join(scenario, "home"), GITHUB_OUTPUT: path.join(scenario, "output"), ACTION_SOURCE_MANIFEST: manifest, FAKE_ACTION_SOURCE: manifest, FAKE_TRACE: path.join(scenario, "trace"), FAKE_PROMPTS: scenario };
+    const invoke = () => spawnSync(process.execPath, [new URL("./run.mjs", import.meta.url).pathname], { cwd: repo, encoding: "utf8", env });
+    let result = invoke(); assert.equal(result.status, 0, result.stderr);
+    assert.match(fs.readFileSync(path.join(scenario, "0001.json.prompt"), "utf8"), /Exact GitHub action source evidence/);
+    env.RESUMED_SESSION_ID = "019f0000-0000-7000-8000-000000000001";
+    const trace = fs.readFileSync(env.FAKE_TRACE, "utf8");
+    result = invoke(); assert.equal(result.status, 0, result.stderr); assert.equal(fs.readFileSync(env.FAKE_TRACE, "utf8"), trace, "same action evidence reuses completed code");
+    env.ACTION_SOURCE_MANIFEST = await acquire("e"); env.FAKE_ACTION_SOURCE = env.ACTION_SOURCE_MANIFEST;
+    result = invoke(); assert.equal(result.status, 0, result.stderr);
+    assert.notEqual(fs.readFileSync(env.FAKE_TRACE, "utf8"), trace, "changed evidence cannot reuse old completed chunks");
+    assert.ok(fs.readFileSync(path.join(scenario, "0001.json.prompt"), "utf8").includes(env.ACTION_SOURCE_MANIFEST));
+    const data = JSON.parse(fs.readFileSync(env.ACTION_SOURCE_MANIFEST));
+    const source = path.join(path.dirname(env.ACTION_SOURCE_MANIFEST), data.snapshots[0].files[0].relative_path);
+    fs.chmodSync(source, 0o600); fs.writeFileSync(source, Buffer.alloc(bytes.length, 0x78));
+    const before = fs.readFileSync(env.FAKE_TRACE, "utf8"); result = invoke();
+    assert.notEqual(result.status, 0); assert.match(result.stderr, /checksum/); assert.equal(fs.readFileSync(env.FAKE_TRACE, "utf8"), before);
+  }
   // Exercise restored sessions against a real Git fixture. A base change must
   // start a fresh model conversation; same-base sessions remain resumable.
   for (const binding of [null, "old-base", base, "legacy"]) {

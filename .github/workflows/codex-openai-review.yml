@@ -389,6 +389,8 @@ jobs:
           || (steps.checkout.outcome == 'failure' && 'Could not check out the trusted pull-request base commit.')
           || steps.prepare_diff.outputs.failure_reason
           || (steps.prepare_diff.outcome == 'failure' && 'Could not prepare the deterministic pull-request diff listing.')
+          || steps.action_sources.outputs.failure_reason
+          || (steps.action_sources.outcome == 'failure' && 'Could not collect exact pinned action source evidence.')
           || (steps.codex_bootstrap.outcome == 'failure' && 'Could not start the protected Codex review runtime.')
           || steps.run_review.outputs.failure_reason
           || (steps.run_review.outcome == 'failure' && 'Codex failed before it completed the requested diff generation.')
@@ -676,6 +678,30 @@ jobs:
           FETCH_TOKEN: ${{ github.token }}
         run: node "$REVIEWER_SOURCE_DIR/.github/scripts/pr-review/lfs.mjs"
 
+      - name: Collect exact pinned action source as read-only evidence
+        id: action_sources
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          REVIEW_FROM_SHA: ${{ steps.prepare_diff.outputs.from_sha }}
+        with:
+          script: |
+            const { pathToFileURL } = require('node:url');
+            const path = require('node:path');
+            const { discoverActionRefs, collectActionSources } = await import(pathToFileURL(path.join(
+              process.env.REVIEWER_SOURCE_DIR, '.github/scripts/pr-review/action-sources.mjs',
+            )).href);
+            try {
+              const request = discoverActionRefs({ repo: process.env.PR_DIFF_REPOSITORY,
+                base: process.env.PR_BASE_TIP_SHA || process.env.PR_BASE_SHA, head: process.env.PR_HEAD_SHA,
+                from: process.env.REVIEW_FROM_SHA });
+              const manifest = await collectActionSources({ github, ...request,
+                directory: path.join(process.env.RUNNER_TEMP, 'openai-pr-action-sources') });
+              core.setOutput('manifest', manifest);
+            } catch (error) {
+              core.setOutput('failure_reason', String(error.message).replace(/\s+/g, ' ').slice(0, 300));
+              throw error;
+            }
+
       - name: Remove fetched pull-request Git objects
         run: |
           case "$PR_DIFF_REPOSITORY" in
@@ -710,6 +736,7 @@ jobs:
           GENERATION_KEY: ${{ steps.prepare_diff.outputs.generation_key }}
           GENERATION_REUSED: ${{ steps.prepare_diff.outputs.reused }}
           LFS_CONTEXT_FILE: ${{ steps.lfs_context.outputs.manifest }}
+          ACTION_SOURCE_MANIFEST: ${{ steps.action_sources.outputs.manifest }}
           RESUMED_SESSION_ID: ${{ steps.restore_session.outputs.session_id }}
           MODEL: ${{ env.REVIEW_MODEL }}
           EFFORT: ${{ env.REVIEW_EFFORT }}
