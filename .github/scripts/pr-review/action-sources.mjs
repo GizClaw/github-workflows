@@ -10,7 +10,7 @@ const sha256 = bytes => crypto.createHash("sha256").update(bytes).digest("hex");
 const safePath = value => typeof value === "string" && value.length <= 512 && value !== ""
   && !value.startsWith("/") && !/[\\\x00-\x1f\x7f]/.test(value)
   && value.split("/").every(part => part !== "" && part !== "." && part !== "..");
-export const ACTION_SOURCE_LIMITS = { repositories: 4, snapshots: 8, files: 512, blobBytes: 8 * 1024 * 1024, totalBytes: 32 * 1024 * 1024, depth: 4 };
+export const ACTION_SOURCE_LIMITS = { repositories: 4, snapshots: 8, files: 512, blobBytes: 8 * 1024 * 1024, totalBytes: 32 * 1024 * 1024, depth: 4, actions: 32, edges: 256, dependencyEntries: 4096, graphBytes: 4 * 1024 * 1024 };
 
 export function actionReference(value) {
   const match = /^([A-Za-z0-9_-]+)\/([A-Za-z0-9_.-]+)(?:\/([^@]+))?@([a-f0-9]{40})$/.exec(value);
@@ -78,12 +78,49 @@ function checkedTree(tree, expected) {
   return [...byPath.values()].filter(entry => entry.type === "blob").sort((a, b) => a.path.localeCompare(b.path, "en"));
 }
 
+// Build each node once, preserving raw edge multiplicity for the work budget.
+// Memoized subtree heights validate every root's longest path: a shared node
+// first reached by a shallow path must not hide a later over-depth path.
+function validateActionGraph(roots, actions, load, limits) {
+  insist(roots.length <= limits.actions && new Set(roots).size === roots.length, "Invalid or duplicate action source roots");
+  const graph = new Map(), pending = [...roots];
+  let bytes = 0, entries = 0, edges = 0;
+  while (pending.length) {
+    const ref = pending.pop();
+    if (graph.has(ref)) continue;
+    insist(graph.size < limits.actions, "Action source dependency count bound exceeded");
+    actionReference(ref);
+    const node = load(ref, limits.graphBytes - bytes);
+    insist(Number.isSafeInteger(node.bytes) && node.bytes >= 0 && (bytes += node.bytes) <= limits.graphBytes, "Action source dependency byte budget exceeded");
+    insist(Array.isArray(node.dependencies) && (entries += node.dependencies.length) <= limits.dependencyEntries, "Action source dependency entry budget exceeded");
+    const dependencies = [...new Set(node.dependencies)];
+    insist((edges += dependencies.length) <= limits.edges, "Action source dependency edge budget exceeded");
+    for (const dependency of dependencies) actionReference(dependency);
+    graph.set(ref, dependencies);
+    pending.push(...dependencies);
+  }
+  insist(graph.size === actions.size, "Unreachable or missing action source dependency");
+  const active = new Set(), heights = new Map();
+  const height = ref => {
+    insist(!active.has(ref), "Action source dependency depth/cycle");
+    if (heights.has(ref)) return heights.get(ref);
+    active.add(ref);
+    let longest = 1;
+    for (const dependency of graph.get(ref)) longest = Math.max(longest, 1 + height(dependency));
+    active.delete(ref);
+    insist(longest <= limits.depth, "Action source dependency depth/cycle");
+    heights.set(ref, longest);
+    return longest;
+  };
+  for (const ref of roots) height(ref);
+}
+
 export async function collectActionSources({ github, directory, base, head, refs, limits = ACTION_SOURCE_LIMITS }) {
   insist(oid(base) && oid(head) && Array.isArray(refs), "Invalid action source request");
   insist(!fs.existsSync(directory), "Action source directory must be new");
   fs.mkdirSync(path.join(directory, "objects"), { recursive: true, mode: 0o700 });
-  const repositories = new Map(), snapshots = new Map(), objects = new Map(), actions = new Map();
-  let total = 0, count = 0;
+  const repositories = new Map(), snapshots = new Map(), objects = new Map(), actions = new Map(), actionBytes = new Map();
+  let total = 0, count = 0, graphBytes = 0, dependencyEntries = 0, edges = 0;
   const snapshot = async reference => {
     const key = `${reference.repository.toLowerCase()}@${reference.commit}`;
     if (snapshots.has(key)) return snapshots.get(key);
@@ -125,22 +162,29 @@ export async function collectActionSources({ github, directory, base, head, refs
   const visit = async (value, ancestors = []) => {
     insist(ancestors.length < limits.depth && !ancestors.includes(value), "Action source dependency depth/cycle");
     if (actions.has(value)) return;
-    insist(actions.size < 32, "Action source dependency count bound exceeded");
+    insist(actions.size < limits.actions, "Action source dependency count bound exceeded");
     const reference = actionReference(value), source = await snapshot(reference);
     const prefix = reference.action_path ? `${reference.action_path}/` : "";
     const manifests = source.files.filter(file => [prefix + "action.yml", prefix + "action.yaml"].includes(file.path));
     insist(manifests.length === 1, "Missing or ambiguous action source manifest");
+    insist((graphBytes += manifests[0].size) <= limits.graphBytes, "Action source dependency byte budget exceeded");
     const text = fs.readFileSync(path.join(directory, manifests[0].relative_path), "utf8");
-    const dependencies = uses(text);
+    const dependencies = uses(text), uniqueDependencies = [...new Set(dependencies)];
+    insist((dependencyEntries += dependencies.length) <= limits.dependencyEntries, "Action source dependency entry budget exceeded");
+    insist((edges += uniqueDependencies.length) <= limits.edges, "Action source dependency edge budget exceeded");
+    actionBytes.set(value, manifests[0].size);
     actions.set(value, { ref: value, ...reference, manifest: manifests[0].path, dependencies });
-    for (const dependency of dependencies) {
+    for (const dependency of uniqueDependencies) {
       insist(!dependency.startsWith("./"), "Local composite action uses require caller-workspace evidence and are unsupported");
       actionReference(dependency); // Mutable/docker/dynamic dependency: refuse.
       await visit(dependency, [...ancestors, value]);
     }
   };
-  for (const ref of [...new Set(refs)].sort()) await visit(ref);
-  const manifest = { schema: 1, base, head, refs: [...new Set(refs)].sort(), actions: [...actions.values()].sort((a, b) => a.ref.localeCompare(b.ref, "en")), snapshots: [...snapshots.values()].sort((a, b) => `${a.repository.full_name}@${a.commit}`.localeCompare(`${b.repository.full_name}@${b.commit}`, "en")) };
+  const roots = [...new Set(refs)].sort();
+  insist(roots.length <= limits.actions, "Action source dependency count bound exceeded");
+  for (const ref of roots) await visit(ref);
+  validateActionGraph(roots, actions, ref => ({ bytes: actionBytes.get(ref), dependencies: actions.get(ref).dependencies }), limits);
+  const manifest = { schema: 1, base, head, refs: roots, actions: [...actions.values()].sort((a, b) => a.ref.localeCompare(b.ref, "en")), snapshots: [...snapshots.values()].sort((a, b) => `${a.repository.full_name}@${a.commit}`.localeCompare(`${b.repository.full_name}@${b.commit}`, "en")) };
   const file = path.join(directory, "manifest.json");
   fs.writeFileSync(file, JSON.stringify(manifest), { mode: 0o400, flag: "wx" });
   return file;
@@ -153,10 +197,10 @@ export function verifyActionSources(file, { base, head, requiredRefs = [] }) {
   const manifest = JSON.parse(fs.readFileSync(file, "utf8"));
   insist(manifest.schema === 1 && manifest.base === base && manifest.head === head && Array.isArray(manifest.refs) && Array.isArray(manifest.snapshots) && Array.isArray(manifest.actions), "Action source PR binding mismatch");
   insist(requiredRefs.every(ref => manifest.refs.includes(ref)), "Missing changed action source reference");
-  insist(manifest.snapshots.length <= ACTION_SOURCE_LIMITS.snapshots && manifest.actions.length <= 32, "Action source manifest bound exceeded");
+  insist(manifest.snapshots.length <= ACTION_SOURCE_LIMITS.snapshots && manifest.actions.length <= ACTION_SOURCE_LIMITS.actions, "Action source manifest bound exceeded");
   const actions = new Map(manifest.actions.map(action => [action.ref, action]));
   insist(actions.size === manifest.actions.length, "Duplicate action source dependency");
-  const snapshots = new Map(), verifiedObjects = new Set();
+  const snapshots = new Map(), verifiedObjects = new Map();
   let fileCount = 0, totalBytes = 0;
   for (const snapshot of manifest.snapshots) {
     insist(oid(snapshot.commit) && oid(snapshot.tree) && snapshot.repository?.full_name && Number.isSafeInteger(snapshot.repository.id), "Invalid action source snapshot");
@@ -169,28 +213,30 @@ export function verifyActionSources(file, { base, head, requiredRefs = [] }) {
       const object = snapshot.files.find(item => item.path === entry.path);
       insist(object?.blob === entry.sha && object.mode === entry.mode && object.size === entry.size && /^[a-f0-9]{64}$/.test(object.sha256) && object.relative_path === `objects/${object.sha256}.txt`, "Action source file binding mismatch");
       insist(Number.isSafeInteger(object.size) && object.size >= 0 && object.size <= ACTION_SOURCE_LIMITS.blobBytes, "Action source blob bound exceeded");
-      if (!verifiedObjects.has(object.sha256)) { totalBytes += object.size; verifiedObjects.add(object.sha256); }
-      insist(totalBytes <= ACTION_SOURCE_LIMITS.totalBytes, "Action source byte bound exceeded");
+      const cached = verifiedObjects.get(object.sha256);
+      if (cached) {
+        insist(cached.blob === object.blob && cached.bytes.length === object.size, "Conflicting action source object binding");
+        continue;
+      }
+      insist((totalBytes += object.size) <= ACTION_SOURCE_LIMITS.totalBytes, "Action source byte bound exceeded");
       const target = path.join(root, object.relative_path);
       insist(!fs.lstatSync(root).isSymbolicLink() && !fs.lstatSync(path.join(root, "objects")).isSymbolicLink() && fs.lstatSync(target).isFile() && !fs.lstatSync(target).isSymbolicLink() && fs.statSync(target).size === object.size, "Unsafe action source evidence file");
       const bytes = fs.readFileSync(target);
       insist(bytes.length === object.size && hash("blob", bytes) === object.blob && sha256(bytes) === object.sha256, "Action source evidence checksum mismatch");
+      verifiedObjects.set(object.sha256, { blob: object.blob, bytes });
     }
     snapshots.set(key, snapshot);
   }
-  const check = (ref, ancestors = []) => {
-    insist(ancestors.length < ACTION_SOURCE_LIMITS.depth && !ancestors.includes(ref), "Action source dependency depth/cycle");
+  validateActionGraph(manifest.refs, actions, (ref, remainingBytes) => {
     const reference = actionReference(ref), action = actions.get(ref), snapshot = snapshots.get(`${reference.repository.toLowerCase()}@${reference.commit}`);
     const prefix = reference.action_path ? reference.action_path + "/" : "";
     const manifests = snapshot?.files.filter(item => [prefix + "action.yml", prefix + "action.yaml"].includes(item.path));
     insist(action && action.repository === reference.repository && action.action_path === reference.action_path && action.commit === reference.commit && manifests?.length === 1 && action.manifest === manifests[0].path, "Missing or mismatched action source dependency");
-    const dependencies = uses(fs.readFileSync(path.join(root, manifests[0].relative_path), "utf8"));
+    insist(manifests[0].size <= remainingBytes, "Action source dependency byte budget exceeded");
+    const dependencies = uses(verifiedObjects.get(manifests[0].sha256).bytes.toString("utf8"));
     insist(JSON.stringify(dependencies) === JSON.stringify(action.dependencies), "Action source dependency binding mismatch");
-    for (const dependency of dependencies) {
-      insist(!dependency.startsWith("./"), "Local composite action uses are unsupported");
-      check(dependency, [...ancestors, ref]);
-    }
-  };
-  for (const ref of manifest.refs) check(ref);
+    for (const dependency of dependencies) insist(!dependency.startsWith("./"), "Local composite action uses are unsupported");
+    return { bytes: manifests[0].size, dependencies };
+  }, ACTION_SOURCE_LIMITS);
   return manifest.refs.length ? sha256(JSON.stringify(manifest)) : "";
 }

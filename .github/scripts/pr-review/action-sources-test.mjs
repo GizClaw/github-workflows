@@ -113,7 +113,7 @@ for (const corruption of ["duplicate", "missing-parent", "tree-hash", "symlink",
     await assert.rejects(collectActionSources(f.options));
   } finally { f.cleanup(); }
 });
-for (const key of ["repositories", "snapshots", "files", "blobBytes", "totalBytes", "depth"]) test(`reject ${key} acquisition over bound`, async () => {
+for (const key of ["repositories", "snapshots", "files", "blobBytes", "totalBytes", "depth", "actions", "edges", "dependencyEntries", "graphBytes"]) test(`reject ${key} acquisition over bound`, async () => {
   const f = fixture(); try { await assert.rejects(collectActionSources({ ...f.options, limits: { ...ACTION_SOURCE_LIMITS, [key]: 0 } })); } finally { f.cleanup(); }
 });
 for (const dependency of ["owner/script@latest", "./local", "docker://image", "${{ inputs.action }}", `owner/actions/sub@${current}`]) test(`refuse unsupported/cyclic dependency ${dependency}`, async () => {
@@ -156,4 +156,115 @@ test("absence stays incomplete for changed pins; no-pin collection makes no API 
   assert.throws(() => verifyActionSources("", { base: old, head: current, requiredRefs: [reference] }), /required/);
   const f = fixture();
   try { const file = await collectActionSources({ ...f.options, refs: [] }); assert.equal(f.calls.length, 0); assert.equal(verifyActionSources(file, { base: old, head: current }), ""); } finally { f.cleanup(); }
+});
+
+// Independently construct valid Git objects for graph fixtures, including ones
+// that the collector must refuse. Never import or execute their source bytes.
+function graphFixture(graph, roots, padding = {}) {
+  const f = fixture(), ref = name => `owner/actions/${name}@${current}`;
+  const files = {};
+  for (const [name, children] of Object.entries(graph)) {
+    files[`${name}/action.yml`] = (padding[name] || "") + (children.length
+      ? "runs:\n  using: composite\n  steps:\n" + children.map(child => `    - uses: ${ref(child)}\n`).join("")
+      : "runs:\n  using: node24\n  main: main.js\n");
+    if (!children.length) files[`${name}/main.js`] = "throw new Error('graph evidence must not execute');\n";
+  }
+  const data = source(files); f.sources.set(`actions:${current}`, data); f.options.refs = roots.map(ref);
+  const bundle = () => {
+    fs.mkdirSync(path.join(f.options.directory, "objects"), { recursive: true });
+    const entries = data.tree.tree.filter(entry => entry.type === "blob").map(entry => {
+      const bytes = Buffer.from(data.blobs.get(entry.sha).content, "base64");
+      const sha256 = crypto.createHash("sha256").update(bytes).digest("hex"), relative_path = `objects/${sha256}.txt`;
+      const target = path.join(f.options.directory, relative_path);
+      if (!fs.existsSync(target)) fs.writeFileSync(target, bytes, { mode: 0o400 });
+      return { path: entry.path, mode: entry.mode, blob: entry.sha, size: bytes.length, sha256, relative_path };
+    });
+    const manifest = { schema: 1, base: old, head: current, refs: roots.map(ref), actions: Object.entries(graph).map(([name, children]) => ({ ref: ref(name), repository: "owner/actions", action_path: name, commit: current, manifest: `${name}/action.yml`, dependencies: children.map(ref) })), snapshots: [{ repository: { id: 1, full_name: "owner/actions" }, commit: current, tree: data.tree.sha, tree_entries: data.tree.tree, files: entries }] };
+    const file = path.join(f.options.directory, "manifest.json"); fs.writeFileSync(file, JSON.stringify(manifest)); return file;
+  };
+  return { ...f, ref, bundle };
+}
+function verifyWithReadCounts(file, leaf) {
+  const manifest = JSON.parse(fs.readFileSync(file));
+  const object = manifest.snapshots[0].files.find(item => item.path === leaf);
+  const target = path.join(path.dirname(file), object.relative_path), read = fs.readFileSync;
+  let leafReads = 0, allReads = 0;
+  fs.readFileSync = function (file, ...args) { allReads++; if (file === target) leafReads++; return read.call(this, file, ...args); };
+  try { return { digest: verifyActionSources(file, { base: old, head: current }), leafReads, allReads }; }
+  finally { fs.readFileSync = read; }
+}
+test("shared DAG validation reads each blob once rather than expanding duplicate paths", async () => {
+  // Bounded old/new regression only. Never run the large graph on old verifier.
+  for (const width of [24, 48]) {
+    const f = graphFixture({ a: Array(width).fill("b"), b: Array(width).fill("c"), c: Array(width).fill("d"), d: [] }, ["a"]);
+    try {
+      const file = await collectActionSources(f.options);
+      const result = verifyWithReadCounts(file, "d/action.yml");
+      assert.equal(result.leafReads, 1, `width ${width}: unique source is hash-checked once`);
+      assert.equal(result.allReads, 6, "one manifest plus five unique source blobs regardless of path multiplicity");
+      assert.match(result.digest, /^[a-f0-9]{64}$/);
+    } finally { f.cleanup(); }
+  }
+});
+test("diamond sharing, repeated edges and repeated roots cannot bypass validation", async () => {
+  const f = graphFixture({ a: ["b", "c", "b", "c"], b: ["d", "d"], c: ["d", "d"], d: ["e"], e: [] }, ["a"]);
+  try {
+    const file = await collectActionSources(f.options), result = verifyWithReadCounts(file, "e/action.yml");
+    assert.equal(result.leafReads, 1); assert.ok(result.allReads <= 7);
+    const manifest = JSON.parse(fs.readFileSync(file)); manifest.refs.push(manifest.refs[0]);
+    fs.chmodSync(file, 0o600); fs.writeFileSync(file, JSON.stringify(manifest));
+    assert.throws(() => verifyActionSources(file, { base: old, head: current }), /duplicate action source roots/);
+  } finally { f.cleanup(); }
+});
+test("a shared subtree first visited shallow still rejects a later longest path over depth", async () => {
+  const graph = { a: ["s"], s: ["t"], t: [], z: ["x"], x: ["y"], y: ["s"] };
+  for (const roots of [["a", "z"], ["z", "a"]]) {
+    const f = graphFixture(graph, roots);
+    try { const file = f.bundle(); assert.throws(() => verifyActionSources(file, { base: old, head: current }), /depth\/cycle/); }
+    finally { f.cleanup(); }
+  }
+  const f = graphFixture(graph, ["a", "z"]);
+  try { await assert.rejects(collectActionSources(f.options), /depth\/cycle/); } finally { f.cleanup(); }
+});
+for (const [name, graph] of Object.entries({ self: { a: ["a"] }, shared: { a: ["b", "c"], b: ["d"], c: ["d"], d: ["b"] } })) test(`cached graph still rejects ${name} cycle`, async () => {
+  const f = graphFixture(graph, ["a"]);
+  try { assert.throws(() => verifyActionSources(f.bundle(), { base: old, head: current }), /depth\/cycle/); } finally { f.cleanup(); }
+});
+for (const corruption of ["bytes", "metadata", "missing-node", "duplicate-node", "missing-source"]) test(`shared graph rejects ${corruption} rather than skipping it via cache`, () => {
+  const f = graphFixture({ a: ["b", "c"], b: ["d"], c: ["d"], d: [] }, ["a"]);
+  try {
+    const file = f.bundle(), manifest = JSON.parse(fs.readFileSync(file));
+    const leaf = manifest.snapshots[0].files.find(item => item.path === "d/action.yml"), target = path.join(path.dirname(file), leaf.relative_path);
+    if (corruption === "bytes") { fs.chmodSync(target, 0o600); fs.writeFileSync(target, Buffer.alloc(leaf.size, 0x78)); }
+    if (corruption === "metadata") manifest.actions.find(action => action.action_path === "d").dependencies = [f.ref("a")];
+    if (corruption === "missing-node") manifest.actions = manifest.actions.filter(action => action.action_path !== "d");
+    if (corruption === "duplicate-node") manifest.actions.push({ ...manifest.actions[0] });
+    if (corruption === "missing-source") fs.unlinkSync(target);
+    fs.writeFileSync(file, JSON.stringify(manifest));
+    assert.throws(() => verifyActionSources(file, { base: old, head: current }));
+  } finally { f.cleanup(); }
+});
+test("large repeated-edge graph is rejected by new work budget without expanded traversal", async () => {
+  // This ~1 MiB fixture is exercised ONLY on the new implementation. The old
+  // verifier would expand 125 billion paths; do not use this case for old-fail.
+  const width = 5000, graph = { a: Array(width).fill("b"), b: Array(width).fill("c"), c: Array(width).fill("d"), d: [] };
+  const f = graphFixture(graph, ["a"]);
+  try { assert.throws(() => verifyActionSources(f.bundle(), { base: old, head: current }), /entry budget/); } finally { f.cleanup(); }
+  const g = graphFixture(graph, ["a"]);
+  try { await assert.rejects(collectActionSources(g.options), /entry budget/); } finally { g.cleanup(); }
+});
+test("dense shared graph respects the unique-edge budget separately from entry and node bounds", async () => {
+  const levels = Array.from({ length: 4 }, (_, layer) => Array.from({ length: 8 }, (_, i) => `n${layer}${i}`));
+  const graph = Object.fromEntries(levels.flatMap((names, layer) => names.map(name => [name, levels.slice(layer + 1).flat()])));
+  const f = graphFixture(graph, levels[0]);
+  try { assert.throws(() => verifyActionSources(f.bundle(), { base: old, head: current }), /edge budget/); } finally { f.cleanup(); }
+  const g = graphFixture(graph, levels[0]);
+  try { await assert.rejects(collectActionSources(g.options), /edge budget/); } finally { g.cleanup(); }
+});
+test("dependency text byte budget is enforced before parsing an oversized action manifest", async () => {
+  const graph = { a: [] }, padding = { a: "#" + "x".repeat(ACTION_SOURCE_LIMITS.graphBytes) + "\n" };
+  const f = graphFixture(graph, ["a"], padding);
+  try { assert.throws(() => verifyActionSources(f.bundle(), { base: old, head: current }), /byte budget/); } finally { f.cleanup(); }
+  const g = graphFixture(graph, ["a"], { a: "#" + "x".repeat(128) + "\n" });
+  try { await assert.rejects(collectActionSources({ ...g.options, limits: { ...ACTION_SOURCE_LIMITS, graphBytes: 128 } }), /byte budget/); } finally { g.cleanup(); }
 });

@@ -221,7 +221,13 @@ rejected in every repository.
   turns receive the manifest, and changed source evidence invalidates completed
   code chunks rather than reusing a review without that evidence.
   Acquisition is bounded to 4 public repositories, 8 commit snapshots, 512 file
-  entries, 8 MiB per blob, 32 MiB unique content and 4 action levels. Truncated or
+  entries, 8 MiB per blob, 32 MiB unique content and 4 action levels. Both
+  acquisition and offline graph validation additionally cap 32 action nodes,
+  256 distinct dependency edges, 4096 dependency occurrences and 4 MiB of parsed
+  action-manifest text. Source blobs are hash-checked once, each graph node is
+  parsed once, and memoized longest paths enforce depth across shared subgraphs
+  while rejecting cycles. Duplicate edges cannot multiply verification work.
+  Truncated or
   invalid trees, hashes, API failures and limits fail closed. Mutable, dynamic,
   Docker and caller-relative `./` action dependencies, symlinks/submodules and
   unsupported manifest `uses` syntax fail acquisition rather than guessing
