@@ -451,8 +451,14 @@ literal trusted review-policy inputs; dynamic policy from mutable variables or
 external services is outside this contract and requires a fresh request when
 changed. Repository policy is additionally bound to the exact reviewed base.
 
-The newest authenticated admission by artifact upload ID wins, after queue
-acquisition, even if its original request/run ID is older. A pending, failed,
+The newest authenticated admission by API `created_at` wins after queue
+acquisition, even if its artifact or original request/run ID is smaller. IDs
+identify evidence; they never establish chronology. Source-job precedence uses
+API `started_at`, then the receipt must match that exact job/run/first attempt
+and cannot predate its job. Missing or invalid UTC timestamps, equal timestamps
+across candidates, duplicate admissions in one run, and inconsistent job/admission
+selection fail closed (an active unmatched source waits for its upload). No ID
+tie-breaker or expiry filtering can resurrect old evidence. A pending, failed,
 expired, malformed or cancelled latest admission cannot reuse an earlier pass.
 The terminal binds that exact admission ID/hash and source identity. An
 API-owned native source-job marker binds the PR/head and is also recorded in the
