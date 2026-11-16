@@ -48,6 +48,46 @@ function fixture(patch = {}) {
   return { root, options, sources, local, remote, calls, cleanup: () => fs.rmSync(root, { recursive: true, force: true }) };
 }
 
+for (const size of [0, 1, 2, 3, 4 * 1024 * 1024, 8 * 1024 * 1024]) {
+  test(`collector accepts valid base64 blob ${size} bytes without regexp stack recursion`, async () => {
+    const f = fixture();
+    try {
+      const data = source({ "sub/action.yml": "runs:\n  using: node24\n  main: payload.bin\n", "sub/payload.bin": Buffer.alloc(size, 0xfb) });
+      // The size range covers no padding, one '=', two '=', and the unchanged
+      // default blob ceiling. Payload is evidence only, never executed.
+      f.sources.set(`actions:${current}`, data); f.options.refs = [reference];
+      for (const blob of data.blobs.values()) blob.content = blob.content.match(/.{1,60}/g)?.join("\n") || "";
+      const file = await collectActionSources(f.options);
+      assert.match(verifyActionSources(file, { base: old, head: current, requiredRefs: [reference] }), /^[a-f0-9]{64}$/);
+    } finally { f.cleanup(); }
+  });
+}
+for (const corruption of ["interior-padding", "three-padding", "alphabet", "whitespace", "carriage-return", "unicode", "short", "long"]) {
+  test(`base64 large blob rejects ${corruption} before hash/decoding can authorize evidence`, async () => {
+    const f = fixture();
+    try {
+      const data = source({ "sub/action.yml": "runs:\n  using: node24\n  main: payload.bin\n", "sub/payload.bin": Buffer.alloc(4 * 1024 * 1024, 0xfb) });
+      const blob = [...data.blobs.values()].find(value => value.size > 1024 * 1024);
+      const at = Math.floor(blob.content.length / 2);
+      const marker = { "interior-padding": "=", "alphabet": "!", "whitespace": " ", "carriage-return": "\r", "unicode": "é" }[corruption];
+      if (marker) blob.content = blob.content.slice(0, at) + marker + blob.content.slice(at + 1);
+      if (corruption === "three-padding") blob.content = blob.content.slice(0, -3) + "===";
+      if (corruption === "short") blob.content = blob.content.slice(4);
+      if (corruption === "long") blob.content += "AAAA";
+      f.sources.set(`actions:${current}`, data); f.options.refs = [reference];
+      await assert.rejects(collectActionSources(f.options), /Malformed action source base64/);
+    } finally { f.cleanup(); }
+  });
+}
+test("collector still refuses a blob one byte beyond its unchanged byte limit", async () => {
+  const f = fixture();
+  try {
+    f.sources.set(`actions:${current}`, source({ "sub/action.yml": "runs:\n  using: node24\n  main: payload.bin\n", "sub/payload.bin": Buffer.alloc(ACTION_SOURCE_LIMITS.blobBytes + 1) }));
+    f.options.refs = [reference];
+    await assert.rejects(collectActionSources(f.options), /file\/size bound exceeded/);
+  } finally { f.cleanup(); }
+});
+
 const patch = `diff --git a/.github/workflows/gates.yml b/.github/workflows/gates.yml\n--- a/.github/workflows/gates.yml\n+++ b/.github/workflows/gates.yml\n-  uses: ${previous}\n+  uses: '${reference}' # immutable\n+  uses: ${reference}\ndiff --git a/README.md b/README.md\n+  uses: owner/docs@${dependency}\n`;
 test("discover exact before/after fixed refs, ignoring other files and duplicate uses", () => {
   assert.deepEqual(actionRefsFromDiff(patch), [previous, reference]);
