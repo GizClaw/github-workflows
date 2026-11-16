@@ -7,6 +7,22 @@ const sha = value => typeof value === "string" && /^[a-f0-9]{40}$/.test(value);
 const integer = value => Number.isSafeInteger(value) && value > 0;
 const insist = (test, message) => { if (!test) throw new Error(message); };
 
+// Only API-owned UTC timestamps establish chronology. Reject invalid dates and
+// ties rather than inventing order from globally allocated artifact/job IDs.
+function apiTime(value) {
+  insist(typeof value === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(value), "Invalid API chronology timestamp");
+  const time = Date.parse(value);
+  insist(Number.isFinite(time) && new Date(time).toISOString() === value.replace(/Z$/, value.includes(".") ? "Z" : ".000Z"), "Invalid API chronology timestamp");
+  return time;
+}
+function chronological(items, timestamp) {
+  const ordered = items.map(item => ({ item, time: apiTime(timestamp(item)) })).sort((a, b) => b.time - a.time);
+  for (let i = 1; i < ordered.length; i++) {
+    insist(ordered[i - 1].time !== ordered[i].time, "Ambiguous API chronology timestamps");
+  }
+  return ordered.map(({ item }) => item);
+}
+
 // Do not let an incomplete API page silently hide a newer admission. Endpoint
 // totals and Link headers must agree. Bounds fail closed, including GitHub's
 // 1,000-result workflow-run search cap (used by the refresh helper).
@@ -86,7 +102,7 @@ async function latestSourceJob({ github, repo, repository, workflow, number, hea
     insist(matched.length <= 1, "Ambiguous source admission jobs");
     if (matched.length) markers.push({ job: matched[0], run });
   }
-  return markers.sort((a, b) => b.job.id - a.job.id)[0];
+  return chronological(markers, item => item.job.started_at)[0];
 }
 
 export function validateAdmission(receipt, { run, artifact, repository, workflow, number }) {
@@ -124,9 +140,14 @@ async function admissions({ github, repo, repository, workflow, number }) {
     const run = (await github.rest.actions.getWorkflowRun({ ...repo, run_id: artifact.workflow_run.id })).data;
     if (validateOrigin({ artifact, run, repository, workflow, defaultBranch: repository.default_branch, admissionCandidate: true })) accepted.push({ artifact, run });
   }
-  // Artifact IDs are allocated at upload/admission, after queue acquisition.
-  // Original request creation and workflow run IDs are deliberately not order keys.
-  return accepted.sort((a, b) => b.artifact.id - a.artifact.id);
+  // Upload creation is the admission point, after queue acquisition. Do not
+  // discard expired entries: an unusable latest admission must fence old PASS.
+  const runs = new Set();
+  for (const { run } of accepted) {
+    insist(!runs.has(run.id), "Ambiguous admission receipts for source run");
+    runs.add(run.id);
+  }
+  return chronological(accepted, item => item.artifact.created_at);
 }
 
 export async function verifyOnce({ github, context, reviewWorkflow, stage, read = readReceipt, collect = collectDiscussion }) {
@@ -157,11 +178,8 @@ export async function verifyOnce({ github, context, reviewWorkflow, stage, read 
   const admission = await read(github, repo, artifact);
   validateAdmission(admission, { run, artifact, repository, workflow, number: original.number });
   insist(marker, "Missing API-owned source admission job");
-  if (marker.job.id > admission.source_job_id) {
-    insist(marker.run.status !== "completed", "Newer accepted request completed without an admission receipt");
-    return { pending: true, reason: "A newer accepted source request is awaiting its admission receipt" };
-  }
   insist(marker.job.id === admission.source_job_id && marker.run.id === run.id, "Admission does not match the latest API-owned source job");
+  insist(apiTime(marker.job.started_at) <= apiTime(artifact.created_at), "Admission predates its source job");
   insist(admission.head_sha === pull.head.sha && admission.base_sha === pull.base.sha, "Latest admission is for a stale PR head/base");
   const branch = (await github.rest.repos.getBranch({ ...repo, branch: repository.default_branch })).data;
   insist(sha(branch.commit?.sha), "Missing default-branch revision");
@@ -185,18 +203,39 @@ export async function verifyOnce({ github, context, reviewWorkflow, stage, read 
   insist(publication.commit_id === pull.head.sha && publication.state === "COMMENTED"
     && publication.user?.login === "github-actions[bot]", "Native publication is missing or mismatched");
   const latest = await admissions({ github, repo, repository, workflow, number: original.number });
-  if (latest[0]?.artifact.id !== artifact.id) return { pending: true, reason: "A newer admission arrived during verification" };
-  const freshMarker = await latestSourceJob({ github, repo, repository, workflow, number: original.number, headSha: pull.head.sha });
-  if (freshMarker?.job.id !== marker.job.id) return { pending: true, reason: "A newer accepted source job appeared during verification" };
+  if (latest[0]?.artifact.id !== artifact.id || latest[0]?.run.id !== run.id) return { pending: true, reason: "A newer admission arrived during verification" };
+  const freshAdmission = latest[0];
+  const validateCompletedSource = freshRun => {
+    insist(validateOrigin({ artifact: freshAdmission.artifact, run: freshRun, repository, workflow, defaultBranch: repository.default_branch })
+      && validateOrigin({ artifact: terminalArtifact, run: freshRun, repository, workflow, defaultBranch: repository.default_branch }),
+    "Latest admission has an invalid source attempt or reusable revision");
+    validateAdmission(admission, { run: freshRun, artifact: freshAdmission.artifact, repository, workflow, number: original.number });
+    insist(freshRun.status === "completed" && freshRun.conclusion === "success", "Latest admitted source run did not succeed");
+  };
+  // Candidate discovery intentionally retains reruns to fence earlier PASS.
+  // Once selected, revalidate full authority and completion, not just IDs.
+  validateCompletedSource(freshAdmission.run);
   const freshPull = (await github.rest.pulls.get({ ...repo, pull_number: pull.number })).data;
   insist(freshPull.state === "open" && !freshPull.draft && freshPull.head.sha === pull.head.sha && freshPull.base.sha === pull.base.sha, "PR revision changed during verification");
   // The publication/admission/job API reads above can overlap metadata or Issue
   // edits without moving the PR's Git revisions. Recollect the canonical live
-  // context as the final verification read, rather than trusting the earlier
+  // context as the final canonical context read, rather than trusting the earlier
   // fingerprint after that interval.
   const finalDiscussion = await collect({ github, context, number: pull.number, triggerCommentId: admission.trigger_comment_id || "" });
   const finalLive = gateContext(finalDiscussion, { repository: admission.repository, number: pull.number, baseSha: freshPull.base.sha, headSha: freshPull.head.sha, policy: admission.policy });
   validateTerminal(terminal, admission, artifact.id, finalLive, stage);
+  const freshMarker = await latestSourceJob({ github, repo, repository, workflow, number: original.number, headSha: pull.head.sha });
+  if (freshMarker?.job.id !== marker.job.id || freshMarker?.run.id !== marker.run.id) return { pending: true, reason: "A newer accepted source job appeared during verification" };
+  validateCompletedSource(freshMarker.run);
+  insist(freshMarker.job.run_attempt === admission.run_attempt
+    && freshMarker.job.status === "completed" && freshMarker.job.conclusion === "success",
+  "Latest API-owned source job did not complete successfully");
+  insist(apiTime(freshMarker.job.started_at) <= apiTime(freshAdmission.artifact.created_at), "Admission predates its source job");
+  // A rerun preserves run/artifact/attempt-1 job IDs. Read the run again after
+  // the native job/context reads so that an observed attempt-2 transition can
+  // never authorize the previous attempt's terminal receipt.
+  const finalSource = (await github.rest.actions.getWorkflowRun({ ...repo, run_id: run.id })).data;
+  validateCompletedSource(finalSource);
   return { pending: false, sourceRunId: run.id, admissionId: artifact.id };
 }
 

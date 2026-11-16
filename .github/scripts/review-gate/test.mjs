@@ -32,7 +32,7 @@ const discussionFixture = () => ({
   live_metadata: { title: "fix: Secure gates", body: "Delivered and tested.", threads: [] }, comments: [],
 });
 const artifactFor = (id, run, name) => ({
-  id, name, expired: false, expires_at: "2099-01-01T00:00:00Z", size_in_bytes: 512,
+  id, name, created_at: "2026-11-16T00:00:00Z", expired: false, expires_at: "2099-01-01T00:00:00Z", size_in_bytes: 512,
   workflow_run: { id: run.id, repository_id: repository.id, head_repository_id: repository.id, head_branch: run.head_branch, head_sha: run.head_sha },
 });
 function fixture() {
@@ -69,9 +69,10 @@ function fixture() {
   const add = (artifactId, runId, verdict = "pass", runPatch = {}) => {
     const run = { ...structuredClone(sourceRun), id: runId, ...runPatch };
     state.runs.set(runId, run);
-    state.jobs.push({ id: artifactId * 10, name: sourceJobName(695, head), run_id: runId, run_attempt: 1, status: run.status });
+    const started_at = new Date(Date.UTC(2026, 10, 16, 0, state.runs.size)).toISOString();
+    state.jobs.push({ id: artifactId * 10, name: sourceJobName(695, head), run_id: runId, run_attempt: 1, status: run.status, conclusion: run.conclusion, started_at });
     state.checks.push({ id: artifactId * 100, name: "OpenAI Code Review", head_sha: head, external_id: `${runId}:1:695:code` });
-    const artifact = artifactFor(artifactId, run, admissionName(695));
+    const artifact = { ...artifactFor(artifactId, run, admissionName(695)), created_at: started_at };
     const admission = {
       schema: 1, kind: "admission", repository: repository.full_name, repository_id: repository.id, number: 695,
       head_sha: head, base_sha: base, run_id: run.id, run_attempt: 1, source_job_id: artifactId * 10, caller_path: workflow.path,
@@ -208,6 +209,143 @@ test("native publication is required, with exact reviewed head and author", asyn
     const f = fixture(), item = f.add(100, 1000);
     f.state.publications.set(item.terminal.publication.review_id, { commit_id: head, state: "COMMENTED", user: { login: "github-actions[bot]" }, ...patch });
     await assert.rejects(verifyOnce(f.options), /publication/);
+  }
+});
+
+test("actual nonmonotonic admission IDs use API creation time, across shuffled pages and job IDs", async () => {
+  const f = fixture();
+  const old = f.add(14246031319, 43905171908, "fail");
+  const current = f.add(14245338170, 43906917114);
+  old.artifact.created_at = "2026-11-16T16:16:57Z";
+  current.artifact.created_at = "2026-11-16T16:24:07Z";
+  f.state.jobs[0].started_at = "2026-11-16T16:16:00Z";
+  f.state.jobs[1].started_at = "2026-11-16T16:24:00Z";
+  for (const jobIds of [[1000, 2000], [2000, 1000]]) {
+    for (const [i, item] of [old, current].entries()) {
+      f.state.jobs[i].id = jobIds[i];
+      item.admission.source_job_id = jobIds[i];
+      item.terminal.source_job_id = jobIds[i];
+      item.terminal.admission_sha256 = sha256(JSON.stringify(item.admission));
+    }
+    for (const order of [[old.artifact, current.artifact], [current.artifact, old.artifact]]) {
+      f.github.rest.actions.listArtifactsForRepo = async ({ page }) => ({
+        data: { artifacts: [order[page - 1]], total_count: 2 },
+        headers: { link: page === 1 ? '<url>; rel="next"' : "" },
+      });
+      for (const stage of ["pr", "issue", "code"]) {
+        assert.deepEqual(await verifyOnce({ ...f.options, stage }), { pending: false, sourceRunId: current.run.id, admissionId: current.artifact.id });
+      }
+    }
+  }
+});
+
+test("ambiguous, invalid or impossible API chronology and duplicate run admissions fail closed", async () => {
+  for (const corruption of ["artifact-tie", "job-tie", "artifact-missing", "job-missing", "artifact-invalid", "job-invalid", "normalized-invalid-date", "predates-job", "duplicate-run"]) {
+    const f = fixture(); const old = f.add(200, 2000); const current = f.add(100, 1000);
+    if (corruption === "artifact-tie") current.artifact.created_at = old.artifact.created_at;
+    if (corruption === "job-tie") f.state.jobs[1].started_at = f.state.jobs[0].started_at;
+    if (corruption === "artifact-missing") delete current.artifact.created_at;
+    if (corruption === "job-missing") delete f.state.jobs[1].started_at;
+    if (corruption === "artifact-invalid") current.artifact.created_at = "yesterday";
+    if (corruption === "job-invalid") f.state.jobs[1].started_at = null;
+    if (corruption === "normalized-invalid-date") current.artifact.created_at = "2026-02-30T00:00:00Z";
+    if (corruption === "predates-job") f.state.jobs[1].started_at = "2026-11-17T00:00:00Z";
+    if (corruption === "duplicate-run") f.state.artifacts.push({ ...current.artifact, id: 999 });
+    await assert.rejects(verifyOnce(f.options), /chronology|predates|Ambiguous admission/);
+  }
+});
+
+test("lower-ID newer missing, expired, malformed and stale-head admissions never reuse old PASS", async () => {
+  for (const corruption of ["missing", "expired", "malformed", "head", "source-job", "attempt"]) {
+    const f = fixture(); f.add(200, 2000); const current = f.add(100, 1000);
+    if (corruption === "missing") f.state.artifacts = f.state.artifacts.filter(a => a.workflow_run.id !== current.run.id);
+    if (corruption === "expired") { current.artifact.expired = true; f.options.read = readReceipt; }
+    if (corruption === "malformed") f.state.receipts.set(100, {});
+    if (corruption === "head") current.admission.head_sha = base;
+    if (corruption === "source-job") current.admission.source_job_id = 2000;
+    if (corruption === "attempt") current.run.run_attempt = 2;
+    await assert.rejects(verifyOnce(f.options));
+  }
+});
+
+test("disagreeing upload/job chronology and duplicate source jobs cannot authorize stale evidence", async () => {
+  for (const corruption of ["reversed-upload", "duplicate-job"]) {
+    const f = fixture(); const old = f.add(200, 2000); f.add(100, 1000);
+    if (corruption === "reversed-upload") old.artifact.created_at = "2026-11-17T00:00:00Z";
+    if (corruption === "duplicate-job") f.state.jobs.push({ ...f.state.jobs[1], id: 999 });
+    await assert.rejects(verifyOnce(f.options), /without an admission receipt|Ambiguous source admission/);
+  }
+});
+
+test("lower-ID arrivals and missing-upload source jobs during verification fence the old PASS", async () => {
+  for (const missing of [false, true]) {
+    const f = fixture(); f.add(200, 2000);
+    const collect = async () => {
+      if (!f.state.runs.has(1000)) f.add(100, 1000, "pass", { status: "in_progress", conclusion: null });
+      if (missing) f.state.artifacts = f.state.artifacts.filter(a => a.workflow_run.id !== 1000);
+      return structuredClone(f.state.discussion);
+    };
+    assert.equal((await verifyOnce({ ...f.options, collect })).pending, true);
+  }
+});
+
+test("source attempt and completion transitions during verification never authorize attempt-1 PASS", async () => {
+  for (const patch of [
+    { run_attempt: 2, status: "in_progress", conclusion: null },
+    { run_attempt: 2, status: "completed", conclusion: "failure" },
+    { run_attempt: 2, status: "completed", conclusion: "success" },
+    { status: "completed", conclusion: "failure" },
+    { status: "in_progress", conclusion: null },
+  ]) {
+    for (const phase of ["first-context", "final-context", "final-marker-jobs"]) {
+      const f = fixture(); const current = f.add(100, 1000);
+      let collections = 0;
+      const collect = async () => {
+        if (++collections === (phase === "first-context" ? 1 : phase === "final-context" ? 2 : 0)) Object.assign(current.run, patch);
+        return structuredClone(f.state.discussion);
+      };
+      if (phase === "final-marker-jobs") {
+        const jobs = f.github.rest.actions.listJobsForWorkflowRun;
+        let calls = 0;
+        f.github.rest.actions.listJobsForWorkflowRun = async args => {
+          const result = await jobs(args);
+          if (++calls === 2) Object.assign(current.run, patch);
+          return result;
+        };
+      }
+      await assert.rejects(verifyOnce({ ...f.options, collect }), /invalid source attempt|source run did not succeed/);
+    }
+  }
+});
+
+test("fresh source job must still be the exact successful first-attempt terminal job", async () => {
+  for (const patch of [
+    { status: "in_progress", conclusion: null },
+    { status: "completed", conclusion: "failure" },
+    { status: "completed", conclusion: "cancelled" },
+    { status: "completed", conclusion: "skipped" },
+  ]) {
+    const f = fixture(); f.add(100, 1000);
+    const collect = async () => { Object.assign(f.state.jobs[0], patch); return structuredClone(f.state.discussion); };
+    await assert.rejects(verifyOnce({ ...f.options, collect }), /source job did not complete successfully/);
+  }
+});
+
+test("fresh source identity and reusable revision cannot change behind stable IDs", async () => {
+  for (const patch of [
+    { referenced_workflows: [] },
+    { referenced_workflows: [{ path: SOURCE_WORKFLOW, sha: "e".repeat(40) }] },
+    { head_sha: "e".repeat(40) },
+  ]) {
+    const f = fixture(); const current = f.add(100, 1000);
+    let calls = 0;
+    const jobs = f.github.rest.actions.listJobsForWorkflowRun;
+    f.github.rest.actions.listJobsForWorkflowRun = async args => {
+      const result = await jobs(args);
+      if (++calls === 2) Object.assign(current.run, patch);
+      return result;
+    };
+    await assert.rejects(verifyOnce(f.options), /invalid source attempt|mismatched admission/);
   }
 });
 

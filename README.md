@@ -451,8 +451,14 @@ literal trusted review-policy inputs; dynamic policy from mutable variables or
 external services is outside this contract and requires a fresh request when
 changed. Repository policy is additionally bound to the exact reviewed base.
 
-The newest authenticated admission by artifact upload ID wins, after queue
-acquisition, even if its original request/run ID is older. A pending, failed,
+The newest authenticated admission by API `created_at` wins after queue
+acquisition, even if its artifact or original request/run ID is smaller. IDs
+identify evidence; they never establish chronology. Source-job precedence uses
+API `started_at`, then the receipt must match that exact job/run/first attempt
+and cannot predate its job. Missing or invalid UTC timestamps, equal timestamps
+across candidates, duplicate admissions in one run, and inconsistent job/admission
+selection fail closed (an active unmatched source waits for its upload). No ID
+tie-breaker or expiry filtering can resurrect old evidence. A pending, failed,
 expired, malformed or cancelled latest admission cannot reuse an earlier pass.
 The terminal binds that exact admission ID/hash and source identity. An
 API-owned native source-job marker binds the PR/head and is also recorded in the
@@ -466,7 +472,10 @@ collection: current PR title/body, closing Issues (including native relationship
 and update revisions), all review-thread pages/metadata, base/head, and policy
 fingerprint. The receipt preserves the existing readiness policy composition:
 Issue-review instructions, one joining space, then PR-readiness instructions.
-Full live thread metadata is used only for the gate fingerprint and removed
+The first attempt, source completion/success and exact native job completion/success
+are revalidated from fresh API responses before PASS, including a final source
+read after native-job reads. A rerun retaining the same run/artifact/attempt-1
+job IDs cannot reuse attempt-1 evidence. Full live thread metadata is used only for the gate fingerprint and removed
 before writing the model context file; existing clipped discussion budgets and
 thread-count inputs remain unchanged. Stale context requires a fresh review. Review publication retains
 its previous snapshot behavior; gates independently enforce live freshness after
