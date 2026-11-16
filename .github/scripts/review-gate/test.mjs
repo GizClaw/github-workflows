@@ -220,14 +220,21 @@ test("actual nonmonotonic admission IDs use API creation time, across shuffled p
   current.artifact.created_at = "2026-11-16T16:24:07Z";
   f.state.jobs[0].started_at = "2026-11-16T16:16:00Z";
   f.state.jobs[1].started_at = "2026-11-16T16:24:00Z";
-  // Fixture job IDs also decrease: neither allocation sequence is a clock.
-  for (const order of [[old.artifact, current.artifact], [current.artifact, old.artifact]]) {
-    f.github.rest.actions.listArtifactsForRepo = async ({ page }) => ({
-      data: { artifacts: [order[page - 1]], total_count: 2 },
-      headers: { link: page === 1 ? '<url>; rel="next"' : "" },
-    });
-    for (const stage of ["pr", "issue", "code"]) {
-      assert.deepEqual(await verifyOnce({ ...f.options, stage }), { pending: false, sourceRunId: current.run.id, admissionId: current.artifact.id });
+  for (const jobIds of [[1000, 2000], [2000, 1000]]) {
+    for (const [i, item] of [old, current].entries()) {
+      f.state.jobs[i].id = jobIds[i];
+      item.admission.source_job_id = jobIds[i];
+      item.terminal.source_job_id = jobIds[i];
+      item.terminal.admission_sha256 = sha256(JSON.stringify(item.admission));
+    }
+    for (const order of [[old.artifact, current.artifact], [current.artifact, old.artifact]]) {
+      f.github.rest.actions.listArtifactsForRepo = async ({ page }) => ({
+        data: { artifacts: [order[page - 1]], total_count: 2 },
+        headers: { link: page === 1 ? '<url>; rel="next"' : "" },
+      });
+      for (const stage of ["pr", "issue", "code"]) {
+        assert.deepEqual(await verifyOnce({ ...f.options, stage }), { pending: false, sourceRunId: current.run.id, admissionId: current.artifact.id });
+      }
     }
   }
 });
