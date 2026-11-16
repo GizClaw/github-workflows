@@ -207,6 +207,30 @@ rejected in every repository.
   Evidence is limited to 32 MiB per blob and 128 MiB of unique blobs per
   generation. The regression tests are `node .github/scripts/pr-review/binary-test.mjs`
   and `node .github/scripts/pr-review/test.mjs`.
+- Changed literal, full-SHA GitHub action `uses:` lines in top-level
+  `.github/workflows/*.yml`/`*.yaml` diffs now receive exact source context before
+  offline review. The trusted collector reads both old and new references from
+  Git object diffs, confirms public repository/commit/tree identities through
+  GitHub's API, reconstructs tree hashes and verifies every blob's Git SHA-1,
+  size and SHA-256. It supplies the complete committed repository snapshots and
+  recursively collects literal full-SHA external action dependencies from their
+  action manifests. This includes local script/import files in each snapshot;
+  none of the dependency code is checked out, installed, imported or executed.
+  Content-addressed files and their manifest are read-only data, never policy;
+  PR-supplied source/claims do not authenticate them. Native and resumed code
+  turns receive the manifest, and changed source evidence invalidates completed
+  code chunks rather than reusing a review without that evidence.
+  Acquisition is bounded to 4 public repositories, 8 commit snapshots, 512 file
+  entries, 8 MiB per blob, 32 MiB unique content and 4 action levels. Truncated or
+  invalid trees, hashes, API failures and limits fail closed. Mutable, dynamic,
+  Docker and caller-relative `./` action dependencies, symlinks/submodules and
+  unsupported manifest `uses` syntax fail acquisition rather than guessing
+  coverage. Runtime downloads and registry packages are not hydrated; missing
+  evidence still requires INCOMPLETE. This syntax-limited discovery is not a
+  general YAML resolver and makes no completeness claim for other reference
+  forms. It adds no permissions or consumer input; activation requires normal
+  publication of the independently reviewed reusable reviewer implementation.
+  Test with `node --test .github/scripts/pr-review/action-sources-test.mjs`.
 - Every model turn reports an execution status separately from findings and
   policy blockers. Native review requires a structured completion event and an
   explicit `COMPLETED:` explanation; `INCOMPLETE:` or malformed output fails
