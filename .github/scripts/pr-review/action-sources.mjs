@@ -115,6 +115,15 @@ function validateActionGraph(roots, actions, load, limits) {
   for (const ref of roots) height(ref);
 }
 
+// Preserve the quartet/padding grammar without a repeated capturing path in
+// RegExp: V8 can exhaust its stack on otherwise valid multi-MiB API blobs.
+// Callers establish the encoded byte bound before this linear alphabet scan.
+function base64Syntax(encoded) {
+  const padding = encoded.endsWith("==") ? 2 : encoded.endsWith("=") ? 1 : 0;
+  return encoded.length % 4 === 0 && (padding === 0 || encoded.length >= 4)
+    && !/[^A-Za-z0-9+/]/.test(padding ? encoded.slice(0, -padding) : encoded);
+}
+
 export async function collectActionSources({ github, directory, base, head, refs, limits = ACTION_SOURCE_LIMITS }) {
   insist(oid(base) && oid(head) && Array.isArray(refs), "Invalid action source request");
   insist(!fs.existsSync(directory), "Action source directory must be new");
@@ -145,7 +154,7 @@ export async function collectActionSources({ github, directory, base, head, refs
         insist(blob.sha === entry.sha && blob.encoding === "base64" && blob.size === entry.size && typeof blob.content === "string", "Malformed action source blob");
         insist(blob.content.length <= 8 * Math.ceil(entry.size / 3) + 2, "Action source encoded blob bound exceeded");
         const encoded = blob.content.replace(/\n/g, "");
-        insist(encoded.length === 4 * Math.ceil(entry.size / 3) && /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encoded), "Malformed action source base64");
+        insist(encoded.length === 4 * Math.ceil(entry.size / 3) && base64Syntax(encoded), "Malformed action source base64");
         const bytes = Buffer.from(encoded, "base64");
         insist(bytes.length === entry.size && hash("blob", bytes) === entry.sha, "Action source blob hash mismatch");
         insist((total += bytes.length) <= limits.totalBytes, "Action source total byte bound exceeded");
