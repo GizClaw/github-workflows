@@ -681,6 +681,8 @@ jobs:
       - name: Collect exact pinned action source as read-only evidence
         id: action_sources
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          REVIEW_FROM_SHA: ${{ steps.prepare_diff.outputs.from_sha }}
         with:
           script: |
             const { pathToFileURL } = require('node:url');
@@ -690,7 +692,8 @@ jobs:
             )).href);
             try {
               const request = discoverActionRefs({ repo: process.env.PR_DIFF_REPOSITORY,
-                base: process.env.PR_BASE_TIP_SHA || process.env.PR_BASE_SHA, head: process.env.PR_HEAD_SHA });
+                base: process.env.PR_BASE_TIP_SHA || process.env.PR_BASE_SHA, head: process.env.PR_HEAD_SHA,
+                from: process.env.REVIEW_FROM_SHA });
               const manifest = await collectActionSources({ github, ...request,
                 directory: path.join(process.env.RUNNER_TEMP, 'openai-pr-action-sources') });
               core.setOutput('manifest', manifest);

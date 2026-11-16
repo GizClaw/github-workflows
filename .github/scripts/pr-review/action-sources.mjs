@@ -42,11 +42,15 @@ export function actionRefsFromDiff(text) {
   }
   return [...refs].sort();
 }
-export function discoverActionRefs({ repo, base, head }) {
-  insist(oid(base) && oid(head), "Invalid action source PR revisions");
+export function discoverActionRefs({ repo, base, head, from }) {
+  insist(oid(base) && oid(head) && (!from || oid(from)), "Invalid action source PR revisions");
   const mergeBase = String(git(repo, ["merge-base", base, head])).trim();
-  const diff = String(git(repo, ["diff", "--no-ext-diff", "--no-textconv", "--unified=0", `${mergeBase}..${head}`, "--", ".github/workflows/*.yml", ".github/workflows/*.yaml"], { maxBuffer: 8 * 1024 * 1024 }));
-  return { base: mergeBase, head, refs: actionRefsFromDiff(diff) };
+  const diff = revision => String(git(repo, ["diff", "--no-ext-diff", "--no-textconv", "--unified=0", `${revision}..${head}`, "--", ".github/workflows/*.yml", ".github/workflows/*.yaml"], { maxBuffer: 8 * 1024 * 1024 }));
+  // Incremental review can remove an intermediate pin absent from the final
+  // merge-base diff. Supply its source too, not just base/current versions.
+  const refs = new Set(actionRefsFromDiff(diff(mergeBase)));
+  if (from && from !== mergeBase) for (const ref of actionRefsFromDiff(diff(from))) refs.add(ref);
+  return { base: mergeBase, head, refs: [...refs].sort() };
 }
 
 function checkedTree(tree, expected) {

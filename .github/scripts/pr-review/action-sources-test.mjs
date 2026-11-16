@@ -63,10 +63,10 @@ test("real Git discovery and actual trusted workflow collector supply bound sour
     fs.writeFileSync(file, `steps:\n  - uses: ${reference}\n`); git("add", "."); git("commit", "-qm", "pin"); const head = git("rev-parse", "HEAD");
     assert.deepEqual(discoverActionRefs({ repo: dir, base, head }), { base, head, refs: [previous, reference] });
     const f = fixture();
-    const keys = ["REVIEWER_SOURCE_DIR", "PR_DIFF_REPOSITORY", "PR_BASE_SHA", "PR_BASE_TIP_SHA", "PR_HEAD_SHA", "RUNNER_TEMP"];
+    const keys = ["REVIEWER_SOURCE_DIR", "PR_DIFF_REPOSITORY", "PR_BASE_SHA", "PR_BASE_TIP_SHA", "PR_HEAD_SHA", "REVIEW_FROM_SHA", "RUNNER_TEMP"];
     const saved = Object.fromEntries(keys.map(key => [key, process.env[key]]));
     try {
-      Object.assign(process.env, { REVIEWER_SOURCE_DIR: fileURLToPath(new URL("../../../", import.meta.url)), PR_DIFF_REPOSITORY: dir, PR_BASE_SHA: base, PR_BASE_TIP_SHA: base, PR_HEAD_SHA: head, RUNNER_TEMP: f.root });
+      Object.assign(process.env, { REVIEWER_SOURCE_DIR: fileURLToPath(new URL("../../../", import.meta.url)), PR_DIFF_REPOSITORY: dir, PR_BASE_SHA: base, PR_BASE_TIP_SHA: base, PR_HEAD_SHA: head, REVIEW_FROM_SHA: base, RUNNER_TEMP: f.root });
       const workflow = fs.readFileSync(new URL("../../workflows/codex-openai-review.yml", import.meta.url), "utf8");
       const section = workflow.split("      - name: Collect exact pinned action source as read-only evidence\n")[1].split("      - name:")[0];
       const script = section.split("          script: |\n")[1].split("\n").filter(line => line.startsWith("            ")).map(line => line.slice(12)).join("\n");
@@ -76,6 +76,10 @@ test("real Git discovery and actual trusted workflow collector supply bound sour
       assert.ok(workflow.indexOf("Collect exact pinned action source") < workflow.indexOf("Remove fetched pull-request Git objects"));
       assert.match(workflow, /ACTION_SOURCE_MANIFEST: \$\{\{ steps\.action_sources\.outputs\.manifest \}\}/);
     } finally { for (const key of keys) { if (saved[key] === undefined) delete process.env[key]; else process.env[key] = saved[key]; } f.cleanup(); }
+    const finalRef = `owner/actions/sub@${"d".repeat(40)}`;
+    fs.writeFileSync(file, `steps:\n  - uses: ${finalRef}\n`); git("add", "."); git("commit", "-qm", "next pin"); const finalHead = git("rev-parse", "HEAD");
+    assert.deepEqual(discoverActionRefs({ repo: dir, base, head: finalHead }).refs, [previous, finalRef].sort());
+    assert.deepEqual(discoverActionRefs({ repo: dir, base, head: finalHead, from: head }).refs, [previous, reference, finalRef].sort(), "incremental source also includes the intermediate pin removed from this chunk");
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 test("collect full committed trees and fixed external dependencies without executing any source", async () => {
