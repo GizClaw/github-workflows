@@ -472,7 +472,10 @@ collection: current PR title/body, closing Issues (including native relationship
 and update revisions), all review-thread pages/metadata, base/head, and policy
 fingerprint. The receipt preserves the existing readiness policy composition:
 Issue-review instructions, one joining space, then PR-readiness instructions.
-Full live thread metadata is used only for the gate fingerprint and removed
+The first attempt, source completion/success and exact native job completion/success
+are revalidated from fresh API responses before PASS, including a final source
+read after native-job reads. A rerun retaining the same run/artifact/attempt-1
+job IDs cannot reuse attempt-1 evidence. Full live thread metadata is used only for the gate fingerprint and removed
 before writing the model context file; existing clipped discussion budgets and
 thread-count inputs remain unchanged. Stale context requires a fresh review. Review publication retains
 its previous snapshot behavior; gates independently enforce live freshness after

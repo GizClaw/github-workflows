@@ -204,17 +204,38 @@ export async function verifyOnce({ github, context, reviewWorkflow, stage, read 
     && publication.user?.login === "github-actions[bot]", "Native publication is missing or mismatched");
   const latest = await admissions({ github, repo, repository, workflow, number: original.number });
   if (latest[0]?.artifact.id !== artifact.id || latest[0]?.run.id !== run.id) return { pending: true, reason: "A newer admission arrived during verification" };
-  const freshMarker = await latestSourceJob({ github, repo, repository, workflow, number: original.number, headSha: pull.head.sha });
-  if (freshMarker?.job.id !== marker.job.id || freshMarker?.run.id !== marker.run.id) return { pending: true, reason: "A newer accepted source job appeared during verification" };
+  const freshAdmission = latest[0];
+  const validateCompletedSource = freshRun => {
+    insist(validateOrigin({ artifact: freshAdmission.artifact, run: freshRun, repository, workflow, defaultBranch: repository.default_branch })
+      && validateOrigin({ artifact: terminalArtifact, run: freshRun, repository, workflow, defaultBranch: repository.default_branch }),
+    "Latest admission has an invalid source attempt or reusable revision");
+    validateAdmission(admission, { run: freshRun, artifact: freshAdmission.artifact, repository, workflow, number: original.number });
+    insist(freshRun.status === "completed" && freshRun.conclusion === "success", "Latest admitted source run did not succeed");
+  };
+  // Candidate discovery intentionally retains reruns to fence earlier PASS.
+  // Once selected, revalidate full authority and completion, not just IDs.
+  validateCompletedSource(freshAdmission.run);
   const freshPull = (await github.rest.pulls.get({ ...repo, pull_number: pull.number })).data;
   insist(freshPull.state === "open" && !freshPull.draft && freshPull.head.sha === pull.head.sha && freshPull.base.sha === pull.base.sha, "PR revision changed during verification");
   // The publication/admission/job API reads above can overlap metadata or Issue
   // edits without moving the PR's Git revisions. Recollect the canonical live
-  // context as the final verification read, rather than trusting the earlier
+  // context as the final canonical context read, rather than trusting the earlier
   // fingerprint after that interval.
   const finalDiscussion = await collect({ github, context, number: pull.number, triggerCommentId: admission.trigger_comment_id || "" });
   const finalLive = gateContext(finalDiscussion, { repository: admission.repository, number: pull.number, baseSha: freshPull.base.sha, headSha: freshPull.head.sha, policy: admission.policy });
   validateTerminal(terminal, admission, artifact.id, finalLive, stage);
+  const freshMarker = await latestSourceJob({ github, repo, repository, workflow, number: original.number, headSha: pull.head.sha });
+  if (freshMarker?.job.id !== marker.job.id || freshMarker?.run.id !== marker.run.id) return { pending: true, reason: "A newer accepted source job appeared during verification" };
+  validateCompletedSource(freshMarker.run);
+  insist(freshMarker.job.run_attempt === admission.run_attempt
+    && freshMarker.job.status === "completed" && freshMarker.job.conclusion === "success",
+  "Latest API-owned source job did not complete successfully");
+  insist(apiTime(freshMarker.job.started_at) <= apiTime(freshAdmission.artifact.created_at), "Admission predates its source job");
+  // A rerun preserves run/artifact/attempt-1 job IDs. Read the run again after
+  // the native job/context reads so that an observed attempt-2 transition can
+  // never authorize the previous attempt's terminal receipt.
+  const finalSource = (await github.rest.actions.getWorkflowRun({ ...repo, run_id: run.id })).data;
+  validateCompletedSource(finalSource);
   return { pending: false, sourceRunId: run.id, admissionId: artifact.id };
 }
 

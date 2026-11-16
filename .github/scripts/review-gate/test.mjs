@@ -70,7 +70,7 @@ function fixture() {
     const run = { ...structuredClone(sourceRun), id: runId, ...runPatch };
     state.runs.set(runId, run);
     const started_at = new Date(Date.UTC(2026, 10, 16, 0, state.runs.size)).toISOString();
-    state.jobs.push({ id: artifactId * 10, name: sourceJobName(695, head), run_id: runId, run_attempt: 1, status: run.status, started_at });
+    state.jobs.push({ id: artifactId * 10, name: sourceJobName(695, head), run_id: runId, run_attempt: 1, status: run.status, conclusion: run.conclusion, started_at });
     state.checks.push({ id: artifactId * 100, name: "OpenAI Code Review", head_sha: head, external_id: `${runId}:1:695:code` });
     const artifact = { ...artifactFor(artifactId, run, admissionName(695)), created_at: started_at };
     const admission = {
@@ -281,11 +281,71 @@ test("lower-ID arrivals and missing-upload source jobs during verification fence
   for (const missing of [false, true]) {
     const f = fixture(); f.add(200, 2000);
     const collect = async () => {
-      f.add(100, 1000, "pass", { status: "in_progress", conclusion: null });
+      if (!f.state.runs.has(1000)) f.add(100, 1000, "pass", { status: "in_progress", conclusion: null });
       if (missing) f.state.artifacts = f.state.artifacts.filter(a => a.workflow_run.id !== 1000);
       return structuredClone(f.state.discussion);
     };
     assert.equal((await verifyOnce({ ...f.options, collect })).pending, true);
+  }
+});
+
+test("source attempt and completion transitions during verification never authorize attempt-1 PASS", async () => {
+  for (const patch of [
+    { run_attempt: 2, status: "in_progress", conclusion: null },
+    { run_attempt: 2, status: "completed", conclusion: "failure" },
+    { run_attempt: 2, status: "completed", conclusion: "success" },
+    { status: "completed", conclusion: "failure" },
+    { status: "in_progress", conclusion: null },
+  ]) {
+    for (const phase of ["first-context", "final-context", "final-marker-jobs"]) {
+      const f = fixture(); const current = f.add(100, 1000);
+      let collections = 0;
+      const collect = async () => {
+        if (++collections === (phase === "first-context" ? 1 : phase === "final-context" ? 2 : 0)) Object.assign(current.run, patch);
+        return structuredClone(f.state.discussion);
+      };
+      if (phase === "final-marker-jobs") {
+        const jobs = f.github.rest.actions.listJobsForWorkflowRun;
+        let calls = 0;
+        f.github.rest.actions.listJobsForWorkflowRun = async args => {
+          const result = await jobs(args);
+          if (++calls === 2) Object.assign(current.run, patch);
+          return result;
+        };
+      }
+      await assert.rejects(verifyOnce({ ...f.options, collect }), /invalid source attempt|source run did not succeed/);
+    }
+  }
+});
+
+test("fresh source job must still be the exact successful first-attempt terminal job", async () => {
+  for (const patch of [
+    { status: "in_progress", conclusion: null },
+    { status: "completed", conclusion: "failure" },
+    { status: "completed", conclusion: "cancelled" },
+    { status: "completed", conclusion: "skipped" },
+  ]) {
+    const f = fixture(); f.add(100, 1000);
+    const collect = async () => { Object.assign(f.state.jobs[0], patch); return structuredClone(f.state.discussion); };
+    await assert.rejects(verifyOnce({ ...f.options, collect }), /source job did not complete successfully/);
+  }
+});
+
+test("fresh source identity and reusable revision cannot change behind stable IDs", async () => {
+  for (const patch of [
+    { referenced_workflows: [] },
+    { referenced_workflows: [{ path: SOURCE_WORKFLOW, sha: "e".repeat(40) }] },
+    { head_sha: "e".repeat(40) },
+  ]) {
+    const f = fixture(); const current = f.add(100, 1000);
+    let calls = 0;
+    const jobs = f.github.rest.actions.listJobsForWorkflowRun;
+    f.github.rest.actions.listJobsForWorkflowRun = async args => {
+      const result = await jobs(args);
+      if (++calls === 2) Object.assign(current.run, patch);
+      return result;
+    };
+    await assert.rejects(verifyOnce(f.options), /invalid source attempt|mismatched admission/);
   }
 });
 
