@@ -10,7 +10,11 @@ const sha256 = bytes => crypto.createHash("sha256").update(bytes).digest("hex");
 const safePath = value => typeof value === "string" && value.length <= 512 && value !== ""
   && !value.startsWith("/") && !/[\\\x00-\x1f\x7f]/.test(value)
   && value.split("/").every(part => part !== "" && part !== "." && part !== "..");
-export const ACTION_SOURCE_LIMITS = { repositories: 4, snapshots: 8, files: 512, blobBytes: 8 * 1024 * 1024, totalBytes: 32 * 1024 * 1024, depth: 4, actions: 32, edges: 256, dependencyEntries: 4096, graphBytes: 4 * 1024 * 1024 };
+// `objects` bounds distinct blobs fetched, hash-checked and stored once (one
+// API request each); `files` bounds logical path entries, which reuse those
+// objects across paths and snapshots. Both sides refuse manifests over
+// `manifestBytes` before the reviewer can consume them.
+export const ACTION_SOURCE_LIMITS = { repositories: 4, snapshots: 8, objects: 512, files: 2048, blobBytes: 8 * 1024 * 1024, totalBytes: 32 * 1024 * 1024, manifestBytes: 4 * 1024 * 1024, depth: 4, actions: 32, edges: 256, dependencyEntries: 4096, graphBytes: 4 * 1024 * 1024 };
 
 export function actionReference(value) {
   const match = /^([A-Za-z0-9_-]+)\/([A-Za-z0-9_.-]+)(?:\/([^@]+))?@([a-f0-9]{40})$/.exec(value);
@@ -150,6 +154,7 @@ export async function collectActionSources({ github, directory, base, head, refs
     for (const entry of entries) {
       insist(++count <= limits.files && Number.isSafeInteger(entry.size) && entry.size >= 0 && entry.size <= limits.blobBytes, "Action source file/size bound exceeded");
       if (!objects.has(entry.sha)) {
+        insist(objects.size < limits.objects, "Action source object bound exceeded");
         const blob = (await github.rest.git.getBlob({ owner, repo, file_sha: entry.sha })).data;
         insist(blob.sha === entry.sha && blob.encoding === "base64" && blob.size === entry.size && typeof blob.content === "string", "Malformed action source blob");
         insist(blob.content.length <= 8 * Math.ceil(entry.size / 3) + 2, "Action source encoded blob bound exceeded");
@@ -194,15 +199,16 @@ export async function collectActionSources({ github, directory, base, head, refs
   for (const ref of roots) await visit(ref);
   validateActionGraph(roots, actions, ref => ({ bytes: actionBytes.get(ref), dependencies: actions.get(ref).dependencies }), limits);
   const manifest = { schema: 1, base, head, refs: roots, actions: [...actions.values()].sort((a, b) => a.ref.localeCompare(b.ref, "en")), snapshots: [...snapshots.values()].sort((a, b) => `${a.repository.full_name}@${a.commit}`.localeCompare(`${b.repository.full_name}@${b.commit}`, "en")) };
-  const file = path.join(directory, "manifest.json");
-  fs.writeFileSync(file, JSON.stringify(manifest), { mode: 0o400, flag: "wx" });
+  const file = path.join(directory, "manifest.json"), encoded = Buffer.from(JSON.stringify(manifest));
+  insist(encoded.length <= limits.manifestBytes, "Action source manifest byte bound exceeded");
+  fs.writeFileSync(file, encoded, { mode: 0o400, flag: "wx" });
   return file;
 }
 
 export function verifyActionSources(file, { base, head, requiredRefs = [] }) {
   if (!file) { insist(requiredRefs.length === 0, "Pinned action source manifest is required"); return ""; }
   const root = path.dirname(file);
-  insist(!fs.lstatSync(root).isSymbolicLink() && fs.lstatSync(file).isFile() && !fs.lstatSync(file).isSymbolicLink() && fs.statSync(file).size <= 4 * 1024 * 1024, "Unsafe or oversized action source manifest");
+  insist(!fs.lstatSync(root).isSymbolicLink() && fs.lstatSync(file).isFile() && !fs.lstatSync(file).isSymbolicLink() && fs.statSync(file).size <= ACTION_SOURCE_LIMITS.manifestBytes, "Unsafe or oversized action source manifest");
   const manifest = JSON.parse(fs.readFileSync(file, "utf8"));
   insist(manifest.schema === 1 && manifest.base === base && manifest.head === head && Array.isArray(manifest.refs) && Array.isArray(manifest.snapshots) && Array.isArray(manifest.actions), "Action source PR binding mismatch");
   insist(requiredRefs.every(ref => manifest.refs.includes(ref)), "Missing changed action source reference");
@@ -227,6 +233,7 @@ export function verifyActionSources(file, { base, head, requiredRefs = [] }) {
         insist(cached.blob === object.blob && cached.bytes.length === object.size, "Conflicting action source object binding");
         continue;
       }
+      insist(verifiedObjects.size < ACTION_SOURCE_LIMITS.objects, "Action source object bound exceeded");
       insist((totalBytes += object.size) <= ACTION_SOURCE_LIMITS.totalBytes, "Action source byte bound exceeded");
       const target = path.join(root, object.relative_path);
       insist(!fs.lstatSync(root).isSymbolicLink() && !fs.lstatSync(path.join(root, "objects")).isSymbolicLink() && fs.lstatSync(target).isFile() && !fs.lstatSync(target).isSymbolicLink() && fs.statSync(target).size === object.size, "Unsafe action source evidence file");

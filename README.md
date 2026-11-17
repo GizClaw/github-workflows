@@ -220,8 +220,12 @@ rejected in every repository.
   PR-supplied source/claims do not authenticate them. Native and resumed code
   turns receive the manifest, and changed source evidence invalidates completed
   code chunks rather than reusing a review without that evidence.
-  Acquisition is bounded to 4 public repositories, 8 commit snapshots, 512 file
-  entries, 8 MiB per blob, 32 MiB unique content and 4 action levels. Both
+  Acquisition is bounded to 4 public repositories, 8 commit snapshots, 512
+  distinct source blobs (each fetched, hash-checked and stored once), 2048
+  logical file entries across snapshots, 8 MiB per blob, 32 MiB unique content,
+  a 4 MiB manifest and 4 action levels. Repeated bytes in other paths or pins
+  reuse a verified blob and count only as entries; offline verification
+  enforces the same object, entry, byte and manifest limits. Both
   acquisition and offline graph validation additionally cap 32 action nodes,
   256 distinct dependency edges, 4096 dependency occurrences and 4 MiB of parsed
   action-manifest text. Source blobs are hash-checked once, each graph node is

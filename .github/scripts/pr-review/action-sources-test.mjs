@@ -153,7 +153,7 @@ for (const corruption of ["duplicate", "missing-parent", "tree-hash", "symlink",
     await assert.rejects(collectActionSources(f.options));
   } finally { f.cleanup(); }
 });
-for (const key of ["repositories", "snapshots", "files", "blobBytes", "totalBytes", "depth", "actions", "edges", "dependencyEntries", "graphBytes"]) test(`reject ${key} acquisition over bound`, async () => {
+for (const key of ["repositories", "snapshots", "objects", "files", "blobBytes", "totalBytes", "manifestBytes", "depth", "actions", "edges", "dependencyEntries", "graphBytes"]) test(`reject ${key} acquisition over bound`, async () => {
   const f = fixture(); try { await assert.rejects(collectActionSources({ ...f.options, limits: { ...ACTION_SOURCE_LIMITS, [key]: 0 } })); } finally { f.cleanup(); }
 });
 for (const dependency of ["owner/script@latest", "./local", "docker://image", "${{ inputs.action }}", `owner/actions/sub@${current}`]) test(`refuse unsupported/cyclic dependency ${dependency}`, async () => {
@@ -307,4 +307,107 @@ test("dependency text byte budget is enforced before parsing an oversized action
   try { assert.throws(() => verifyActionSources(f.bundle(), { base: old, head: current }), /byte budget/); } finally { f.cleanup(); }
   const g = graphFixture(graph, ["a"], { a: "#" + "x".repeat(128) + "\n" });
   try { await assert.rejects(collectActionSources({ ...g.options, limits: { ...ACTION_SOURCE_LIMITS, graphBytes: 128 } }), /byte budget/); } finally { g.cleanup(); }
+});
+
+// Logical path entries and distinct fetched objects are separate budgets. A
+// complete snapshot set may repeat bytes (licenses, old/new pins) without
+// another request/hash/write, but every distinct object is still counted.
+function entrySource(count, { unique = 1, extra = {} } = {}) {
+  const files = { "sub/action.yml": "runs:\n  using: node24\n  main: f0.js\n", ...extra };
+  for (let i = 0; i < count - 1 - Object.keys(extra).length; i++) files[`sub/f${i}.js`] = `// shared ${i % unique}\n`;
+  return source(files);
+}
+test("repeated bindings consume file entries, not the distinct object budget (exact and +1)", async () => {
+  const run = async limits => {
+    const f = fixture();
+    try {
+      f.sources.set(`actions:${current}`, entrySource(7, { unique: 2 })); f.options.refs = [reference];
+      const file = await collectActionSources({ ...f.options, limits: { ...ACTION_SOURCE_LIMITS, ...limits } });
+      const data = JSON.parse(fs.readFileSync(file));
+      assert.equal(data.snapshots[0].files.length, 7);
+      assert.equal(f.calls.filter(([kind]) => kind === "blob").length, 3, "one request per distinct object");
+      return verifyActionSources(file, { base: old, head: current, requiredRefs: [reference] });
+    } finally { f.cleanup(); }
+  };
+  assert.match(await run({ objects: 3, files: 7 }), /^[a-f0-9]{64}$/);
+  await assert.rejects(run({ objects: 2, files: 7 }), /object bound exceeded/);
+  await assert.rejects(run({ objects: 3, files: 6 }), /file\/size bound exceeded/);
+});
+test("default distinct-object bound: 512 accepted, 513 refused by acquisition and offline verification", async () => {
+  const limit = ACTION_SOURCE_LIMITS.objects;
+  for (const count of [limit, limit + 1]) {
+    const f = fixture();
+    try {
+      f.sources.set(`actions:${current}`, entrySource(count, { unique: count })); f.options.refs = [reference];
+      if (count === limit) {
+        const file = await collectActionSources(f.options);
+        assert.match(verifyActionSources(file, { base: old, head: current, requiredRefs: [reference] }), /^[a-f0-9]{64}$/);
+      } else {
+        await assert.rejects(collectActionSources(f.options), /object bound exceeded/);
+        assert.ok(!fs.existsSync(path.join(f.options.directory, "manifest.json")), "refusal publishes no manifest");
+        assert.equal(f.calls.filter(([kind]) => kind === "blob").length, limit, "refused before the extra request");
+        fs.rmSync(f.options.directory, { recursive: true });
+        const file = await collectActionSources({ ...f.options, limits: { ...ACTION_SOURCE_LIMITS, objects: count } });
+        assert.throws(() => verifyActionSources(file, { base: old, head: current, requiredRefs: [reference] }), /object bound exceeded/);
+      }
+    } finally { f.cleanup(); }
+  }
+});
+test("default file-entry bound across old/new snapshots: 2048 accepted, 2049 refused on both sides", async () => {
+  const limit = ACTION_SOURCE_LIMITS.files, half = limit / 2;
+  for (const count of [limit, limit + 1]) {
+    const f = fixture();
+    try {
+      // Same repository, two pins: per-snapshot trees stay under 2048 entries.
+      f.sources.set(`actions:${old}`, entrySource(half, { unique: 4 }));
+      f.sources.set(`actions:${current}`, entrySource(count - half, { unique: 4, extra: count > limit ? { "sub/new.js": "// new\n" } : {} }));
+      if (count === limit) {
+        const file = await collectActionSources(f.options), data = JSON.parse(fs.readFileSync(file));
+        assert.equal(data.snapshots.reduce((sum, s) => sum + s.files.length, 0), limit);
+        assert.match(verifyActionSources(file, { base: old, head: current, requiredRefs: [reference] }), /^[a-f0-9]{64}$/);
+      } else {
+        await assert.rejects(collectActionSources(f.options), /file\/size bound exceeded/);
+        assert.ok(!fs.existsSync(path.join(f.options.directory, "manifest.json")));
+        fs.rmSync(f.options.directory, { recursive: true });
+        const file = await collectActionSources({ ...f.options, limits: { ...ACTION_SOURCE_LIMITS, files: count } });
+        assert.throws(() => verifyActionSources(file, { base: old, head: current, requiredRefs: [reference] }), /file bound exceeded/);
+      }
+    } finally { f.cleanup(); }
+  }
+});
+test("manifest byte bound is shared: exact size accepted, +1 refused, collector refuses before writing", async () => {
+  const f = fixture();
+  try {
+    const file = await collectActionSources(f.options), size = fs.statSync(file).size;
+    const digest = verifyActionSources(file, { base: old, head: current, requiredRefs: [reference] });
+    const text = fs.readFileSync(file, "utf8");
+    fs.chmodSync(file, 0o600);
+    fs.writeFileSync(file, text + " ".repeat(ACTION_SOURCE_LIMITS.manifestBytes - size));
+    assert.equal(verifyActionSources(file, { base: old, head: current, requiredRefs: [reference] }), digest, "exact bound accepted");
+    fs.appendFileSync(file, " ");
+    assert.throws(() => verifyActionSources(file, { base: old, head: current, requiredRefs: [reference] }), /oversized action source manifest/);
+    for (const [bytes, accepted] of [[size, true], [size - 1, false]]) {
+      const g = fixture();
+      try {
+        const attempt = collectActionSources({ ...g.options, limits: { ...ACTION_SOURCE_LIMITS, manifestBytes: bytes } });
+        if (accepted) assert.equal(fs.statSync(await attempt).size, size);
+        else { await assert.rejects(attempt, /manifest byte bound exceeded/); assert.ok(!fs.existsSync(path.join(g.options.directory, "manifest.json"))); }
+      } finally { g.cleanup(); }
+    }
+  } finally { f.cleanup(); }
+});
+test("default bounds accept the measured four-action shape: 605 entries over 484 distinct objects", async () => {
+  // Mirrors the real complete checkout/download/setup-go/upload snapshot set
+  // (605 path entries, 484 distinct blobs); old entry-counted 512 refused it.
+  const f = fixture();
+  try {
+    f.sources.set(`actions:${old}`, entrySource(302, { unique: 301 }));
+    f.sources.set(`actions:${current}`, entrySource(303, { unique: 302, extra: Object.fromEntries(Array.from({ length: 182 }, (_, i) => [`sub/n${i}.js`, `// new ${i}\n`])) }));
+    const file = await collectActionSources(f.options), data = JSON.parse(fs.readFileSync(file));
+    const objects = new Set(data.snapshots.flatMap(s => s.files.map(item => item.blob)));
+    assert.equal(data.snapshots.reduce((sum, s) => sum + s.files.length, 0), 605);
+    assert.equal(objects.size, 484);
+    assert.equal(f.calls.filter(([kind]) => kind === "blob").length, 484);
+    assert.match(verifyActionSources(file, { base: old, head: current, requiredRefs: [reference] }), /^[a-f0-9]{64}$/);
+  } finally { f.cleanup(); }
 });
