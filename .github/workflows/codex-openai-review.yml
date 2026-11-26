@@ -728,8 +728,8 @@ jobs:
           allow-users: '*'
           codex-version: ${{ inputs.codex-version }}
           codex-home: ${{ env.CODEX_HOME }}
-          permission-profile: :read-only
-          safety-strategy: drop-sudo
+          permission-profile: ${{ runner.environment == 'github-hosted' && ':read-only' || '' }}
+          safety-strategy: ${{ runner.environment == 'self-hosted' && 'read-only' || 'drop-sudo' }}
 
       - name: Review pending diff chunks in the PR session
         id: run_review
