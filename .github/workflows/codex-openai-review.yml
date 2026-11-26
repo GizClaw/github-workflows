@@ -3,6 +3,11 @@ name: OpenAI PR review
 on:
   workflow_call:
     inputs:
+      runner:
+        description: Linux runner label for all jobs in the review workflow.
+        required: false
+        default: ubuntu-latest
+        type: string
       model:
         description: Deprecated compatibility input; the shared reviewer always uses gpt-6.1-sol.
         required: false
@@ -87,7 +92,7 @@ on:
 
 jobs:
   rerun-guard:
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner }}
     steps:
       - name: Reject workflow reruns
         env:
@@ -101,7 +106,7 @@ jobs:
   resolve:
     needs: rerun-guard
     if: github.run_attempt == 1
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner }}
     permissions:
       actions: read
       contents: read
@@ -241,7 +246,7 @@ jobs:
   start:
     needs: resolve
     if: github.run_attempt == 1 && needs.resolve.outputs.eligible == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner }}
     permissions:
       checks: write
       issues: write
@@ -350,7 +355,7 @@ jobs:
     name: Review admission PR-${{ needs.resolve.outputs.number }} head-${{ needs.resolve.outputs.head_sha }}
     needs: [resolve, start]
     if: github.run_attempt == 1 && needs.resolve.outputs.eligible == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner }}
     permissions:
       actions: write
       contents: read
@@ -996,7 +1001,7 @@ jobs:
   publish:
     needs: [resolve, review]
     if: github.run_attempt == 1 && needs.review.result == 'success'
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner }}
     permissions:
       contents: read
       issues: read
@@ -1362,7 +1367,7 @@ jobs:
   finalize:
     needs: [resolve, start, review, publish]
     if: always() && github.run_attempt == 1 && needs.resolve.outputs.eligible == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner }}
     permissions:
       checks: write
       issues: write
