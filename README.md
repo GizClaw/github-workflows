@@ -25,6 +25,8 @@ effort and accepts complete diffs up to 100,000,000 bytes. The legacy `model`,
 ignored. Existing callers must update their pinned workflow reference to receive
 this policy; they can then remove those three inputs. Codex CLI defaults to the
 pinned version `0.163.0`.
+Pass `runner` to select a Linux self-hosted runner label for every review job.
+The default is `ubuntu-latest`.
 The caller must grant `checks: write` so the shared reviewer can expose its
 lifecycle on the reviewed PR head, and
 `pull-requests: write` for request reactions on PR comments and native review
